@@ -168,15 +168,6 @@ struct WorkspaceSettingsView: View {
                     Label("Computer access is set per agent", systemImage: "desktopcomputer")
                 }.listRowBackground(WorkspaceTheme.surface)
                 Section {
-                    NavigationLink {
-                        GatewaySettingsView()
-                    } label: {
-                        Label(gateway.isConfigured ? "Alan’s Way · \(gateway.address)" : "Connect Alan’s Way", systemImage: "bubble.left.and.text.bubble.right")
-                    }.accessibilityIdentifier("alansWaySettings")
-                } header: { Text("Alan’s Way") } footer: {
-                    Text("Chat with your Hermes agent directly over your Tailscale network, beside Telegram.")
-                }.listRowBackground(WorkspaceTheme.surface)
-                Section {
                     Picker("Preferred channel", selection: Binding(get: { settings.releaseChannel }, set: { settings.releaseChannel = $0 })) {
                         ForEach(ReleaseChannel.allCases) { channel in Text(channel.title).tag(channel) }
                     }.accessibilityIdentifier("releaseChannel")
@@ -209,6 +200,15 @@ struct WorkspaceSettingsView: View {
                     Text("Diagnostics")
                 } footer: {
                     Text("Apple’s MetricKit delivers crash and hang reports to the app. They stay on this device until you share them; nothing is uploaded automatically.")
+                }.listRowBackground(WorkspaceTheme.surface)
+                Section {
+                    NavigationLink {
+                        GatewaySettingsView()
+                    } label: {
+                        Label(gateway.isConfigured ? "Alan’s Way · \(gateway.address)" : "Connect Alan’s Way", systemImage: "bubble.left.and.text.bubble.right")
+                    }.accessibilityIdentifier("alansWaySettings")
+                } header: { Text("Alan’s Way") } footer: {
+                    Text("Chat with your Hermes agent directly over your Tailscale network, beside Telegram.")
                 }.listRowBackground(WorkspaceTheme.surface)
                 Section { Text("Alan’s Workspace · \(WorkspaceSettings.installedVersion)").font(.footnote).foregroundStyle(WorkspaceTheme.secondary) }
                     .listRowBackground(WorkspaceTheme.surface)

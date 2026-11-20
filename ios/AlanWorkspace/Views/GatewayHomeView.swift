@@ -15,8 +15,8 @@ struct GatewayHomeView: View {
                 VStack(alignment: .leading, spacing: 24) {
                     HStack {
                         VStack(alignment: .leading, spacing: 7) {
-                            Text("YOUR WORKSPACE").font(.system(size: 10, weight: .medium, design: .monospaced)).tracking(2).foregroundStyle(WorkspaceTheme.secondary)
-                            Text("Alan’s Way").font(.system(size: 36, weight: .medium, design: .serif)).tracking(-0.7)
+                            Text("YOUR WORKSPACE").font(.system(.caption2, design: .monospaced, weight: .medium)).tracking(2).foregroundStyle(WorkspaceTheme.secondary)
+                            Text("Alan’s Way").font(.system(.largeTitle, design: .serif, weight: .medium)).tracking(-0.7)
                         }
                         Spacer()
                         Button { showSettings = true } label: {
@@ -26,7 +26,7 @@ struct GatewayHomeView: View {
 
                     HStack(spacing: 7) {
                         Circle().fill(WorkspaceTheme.mint).frame(width: 5, height: 5)
-                        Text("Your conversations, straight from Hermes").font(.system(size: 11)).foregroundStyle(WorkspaceTheme.secondary)
+                        Text("Your conversations, straight from Hermes").font(.caption).foregroundStyle(WorkspaceTheme.secondary)
                     }
 
                     list
@@ -34,7 +34,7 @@ struct GatewayHomeView: View {
                     Button(action: newConversation) {
                         HStack(spacing: 10) {
                             if creating { ProgressView() } else { Image(systemName: "plus").font(.system(size: 15)) }
-                            Text("New conversation").font(.system(size: 14, weight: .medium))
+                            Text("New conversation").font(.subheadline.weight(.medium))
                         }
                         .frame(maxWidth: .infinity, minHeight: 44).padding(.vertical, 12)
                         .overlay(RoundedRectangle(cornerRadius: 20).stroke(WorkspaceTheme.line, style: StrokeStyle(lineWidth: 1, dash: [5, 5])))
@@ -101,14 +101,14 @@ struct GatewayConversationRow: View {
             AgentPortrait(name: "hermes", size: 68)
             VStack(alignment: .leading, spacing: 7) {
                 HStack {
-                    Text(conversation.title).font(.system(size: 17, weight: .semibold)).lineLimit(1)
+                    Text(conversation.title).font(.headline).lineLimit(2)
                     Spacer(minLength: 0)
                     if let date = conversation.lastActive {
-                        Text(GatewayFormat.short(date)).font(.system(size: 11, design: .monospaced)).foregroundStyle(WorkspaceTheme.secondary)
+                        Text(GatewayFormat.short(date)).font(.system(.caption2, design: .monospaced)).foregroundStyle(WorkspaceTheme.secondary)
                     }
                 }
                 Text(conversation.preview.isEmpty ? "Pick up your conversation" : conversation.preview)
-                    .font(.system(size: 13)).foregroundStyle(WorkspaceTheme.secondary).lineLimit(2).lineSpacing(3)
+                    .font(.footnote).foregroundStyle(WorkspaceTheme.secondary).lineLimit(2).lineSpacing(3)
             }
             Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold)).foregroundStyle(WorkspaceTheme.secondary)
         }

@@ -38,8 +38,8 @@ struct GatewayChatView: View {
                 HStack(spacing: 10) {
                     AgentPortrait(name: "hermes", size: 34)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(title).font(.system(size: 15, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
-                        Text("Alan’s Way").font(.system(size: 10)).foregroundStyle(WorkspaceTheme.secondary)
+                        Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(.white).lineLimit(1)
+                        Text("Alan’s Way").font(.caption2).foregroundStyle(WorkspaceTheme.secondary)
                     }
                 }
                 .accessibilityElement(children: .combine).accessibilityLabel("\(title), Alan’s Way")
@@ -61,15 +61,15 @@ struct GatewayChatView: View {
                             ProgressView("Loading conversation…").frame(maxWidth: .infinity).padding(.top, 70)
                         } else if let error = thread.loadError {
                             VStack(spacing: 14) {
-                                Text(error).font(.system(size: 14)).foregroundStyle(WorkspaceTheme.secondary).multilineTextAlignment(.center)
+                                Text(error).font(.callout).foregroundStyle(WorkspaceTheme.secondary).multilineTextAlignment(.center)
                                 Button("Try again") { gateway.reload(conversationID) }.frame(minHeight: 44)
                             }.frame(maxWidth: .infinity).padding(.top, 70)
                         } else {
                             VStack(spacing: 18) {
                                 AgentPortrait(name: "hermes", size: 100)
-                                Text("Say something to Alan.").font(.system(size: 24, weight: .medium, design: .serif))
+                                Text("Say something to Alan.").font(.system(.title2, design: .serif, weight: .medium))
                                 Text("Your message and Alan’s reply stay on your Hermes machine.")
-                                    .font(.system(size: 13)).foregroundStyle(WorkspaceTheme.secondary).multilineTextAlignment(.center).lineSpacing(4)
+                                    .font(.footnote).foregroundStyle(WorkspaceTheme.secondary).multilineTextAlignment(.center).lineSpacing(4)
                             }.frame(maxWidth: .infinity).padding(.top, 80)
                         }
                     }
@@ -103,9 +103,9 @@ struct GatewayChatView: View {
     private var replyingRow: some View {
         HStack(spacing: 10) {
             AgentPortrait(name: "hermes", size: 23)
-            Text(thread.statusLine ?? "Alan is replying…").font(.system(size: 13)).foregroundStyle(WorkspaceTheme.secondary)
+            Text(thread.statusLine ?? "Alan is replying…").font(.footnote).foregroundStyle(WorkspaceTheme.secondary)
             Spacer(minLength: 0)
-            Button("Stop") { gateway.stopReply(conversationID) }.font(.system(size: 13, weight: .medium)).frame(minWidth: 44, minHeight: 44)
+            Button("Stop") { gateway.stopReply(conversationID) }.font(.footnote.weight(.medium)).frame(minWidth: 44, minHeight: 44)
                 .accessibilityLabel("Stop the reply").accessibilityIdentifier("gatewayStop")
         }
         .accessibilityElement(children: .contain)
@@ -150,6 +150,7 @@ private struct GatewayBubble: View {
     let onCancel: () -> Void
     let onRetry: () -> Void
     @ScaledMetric(relativeTo: .caption2) private var metaSize: CGFloat = 10
+    @ScaledMetric(relativeTo: .body) private var textSize: CGFloat = 15
     private var isUser: Bool { message.role == .user }
 
     var body: some View {
@@ -167,7 +168,7 @@ private struct GatewayBubble: View {
                         if message.text.isEmpty && message.isStreaming {
                             Text("…").foregroundStyle(WorkspaceTheme.secondary)
                         } else if isUser {
-                            Text(message.text).font(.system(size: 15)).lineSpacing(5).textSelection(.enabled)
+                            Text(message.text).font(.system(size: textSize)).lineSpacing(5).textSelection(.enabled)
                         } else {
                             GatewayMarkdownView(text: message.text)
                         }
@@ -213,6 +214,6 @@ private struct GatewayBubble: View {
             Button("Retry", action: onRetry).accessibilityLabel("Send this message again").accessibilityIdentifier("gatewayRetry")
             Button("Delete", role: .destructive, action: onCancel).accessibilityLabel("Delete this message").accessibilityIdentifier("gatewayDelete")
         }
-        .font(.system(size: 14, weight: .medium)).buttonStyle(.bordered).controlSize(.large)
+        .font(.subheadline.weight(.medium)).buttonStyle(.bordered).controlSize(.large)
     }
 }

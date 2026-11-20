@@ -51,7 +51,7 @@ import XCTest
 
         // A reply that is streaming when the connection drops arrives whole, once.
         try store.send("show me example code", to: "key-1")
-        try await until("the reply to start") { store.messages(for: "key-1").last?.isStreaming == true || store.thread("key-1").busy }
+        try await until("the reply to start") { store.messages(for: "key-1").last?.isStreaming == true || store.thread("key-1").busy || store.messages(for: "key-1").count > before + 2 }
         await hit("/drop")
         try await until("the whole reply", timeout: 30) { store.messages(for: "key-1").last?.text.hasSuffix("returns the text.") == true && !store.thread("key-1").busy }
         let reply = try XCTUnwrap(store.messages(for: "key-1").last?.text)

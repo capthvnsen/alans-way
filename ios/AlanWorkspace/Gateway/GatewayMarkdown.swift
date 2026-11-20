@@ -112,6 +112,7 @@ private struct GatewayCodeBlock: View {
     let text: String
     let size: CGFloat
     @State private var copied = false
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -124,7 +125,8 @@ private struct GatewayCodeBlock: View {
                     Task { try? await Task.sleep(nanoseconds: 1_500_000_000); copied = false }
                 } label: {
                     Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")
-                        .font(.system(size: size - 3)).frame(minHeight: 44).padding(.horizontal, 6)
+                        .labelStyle(CopyLabelStyle(iconOnly: typeSize.isAccessibilitySize))
+                        .font(.system(size: size - 3)).lineLimit(1).fixedSize().frame(minWidth: 44, minHeight: 44).padding(.horizontal, 6)
                 }
                 .accessibilityLabel(copied ? "Copied" : "Copy code")
             }
@@ -137,5 +139,12 @@ private struct GatewayCodeBlock: View {
         .background(WorkspaceTheme.background, in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(WorkspaceTheme.line))
         .accessibilityElement(children: .contain)
+    }
+}
+
+private struct CopyLabelStyle: LabelStyle {
+    let iconOnly: Bool
+    func makeBody(configuration: Configuration) -> some View {
+        if iconOnly { configuration.icon } else { Label { configuration.title } icon: { configuration.icon } }
     }
 }

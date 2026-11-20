@@ -13,6 +13,10 @@ struct AlanWorkspaceApp: App {
         MXMetricManager.shared.add(DiagnosticsStore.shared)
         #if DEBUG
         let loopback = ProcessInfo.processInfo.arguments.contains("--gateway-allow-loopback")
+        if ProcessInfo.processInfo.arguments.contains("--gateway-reset") {
+            try? KeychainGatewaySessionStore().clear()
+            try? FileManager.default.removeItem(at: GatewayOutbox.defaultURL)
+        }
         _gateway = State(initialValue: GatewayStore(allowLoopback: loopback))
         #else
         _gateway = State(initialValue: GatewayStore())

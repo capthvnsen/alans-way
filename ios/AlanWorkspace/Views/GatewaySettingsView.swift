@@ -60,7 +60,7 @@ struct GatewaySettingsView: View {
                 .focused($focus, equals: .username).submitLabel(.next).onSubmit { focus = .password }
                 .accessibilityIdentifier("gatewayUsername")
             SecureField("Dashboard password", text: $password)
-                .textContentType(.password).focused($focus, equals: .password).submitLabel(.go).onSubmit(submit)
+                .focused($focus, equals: .password).submitLabel(.go).onSubmit(submit)
                 .accessibilityIdentifier("gatewayPassword")
         } header: { Text("Hermes gateway") } footer: {
             VStack(alignment: .leading, spacing: 8) {
@@ -115,7 +115,7 @@ struct GatewaySettingsView: View {
                 if showsDone { dismiss() }
             } catch let e as GatewayError {
                 errorText = e.code == "unreachable" || e.code == "timeout" ? "Could not reach the gateway. Is Tailscale connected on this phone?" : e.message
-            } catch { errorText = "Sign-in failed." }
+            } catch { errorText = "Could not save the sign-in on this device. \(error.localizedDescription)" }
         }
     }
 }

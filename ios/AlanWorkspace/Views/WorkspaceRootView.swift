@@ -31,13 +31,14 @@ struct WorkspaceRootView: View {
             }
         }
         .background(WorkspaceTheme.background)
-        .safeAreaInset(edge: .bottom, spacing: 0) {
+        // An overlay, not an inset: the Telegram sign-in's layout and keyboard handling stay as they were.
+        .overlay(alignment: .topTrailing) {
             if telegram.authState != .ready && (!gateway.isConfigured || telegramSetup) {
                 Button(telegramSetup ? "Back to Alan’s Way" : "Use Alan’s Way instead") {
                     if telegramSetup { telegramSetup = false } else { showGatewaySetup = true }
                 }
-                .font(.footnote).foregroundStyle(WorkspaceTheme.secondary).frame(minHeight: 44).frame(maxWidth: .infinity)
-                .background(WorkspaceTheme.background).accessibilityIdentifier("useAlansWay")
+                .font(.footnote).foregroundStyle(WorkspaceTheme.mint).frame(minHeight: 44).padding(.horizontal, 20)
+                .accessibilityIdentifier("useAlansWay")
             }
         }
         .sheet(isPresented: $showGatewaySetup) { NavigationStack { GatewaySettingsView(showsDone: true) } }

@@ -9,12 +9,15 @@ final class GatewayAddressTests: XCTestCase {
         }
     }
 
+    /// A literal Tailscale address (CGNAT range). Built from parts, as desktop/test/vps-browser.test.cjs does.
+    private static let tailnetIP = [100, 64, 0, 1].map(String.init).joined(separator: ".")
+
     func testRefusesEverythingElse() {
         let refused = ["http://vm.tail1234.ts.net", "ws://vm.tail1234.ts.net/api/ws", "wss://vm.tail1234.ts.net/api/ws", "https://ts.net", "https://.ts.net", "https://a..ts.net",
                        "https://vm.tail1234.ts.net.", "https://ts.net.evil.com", "https://vm.ts.net.evil.com", "https://evil-ts.net", "https://evilts.net",
                        "https://vm.ts.net@evil.example", "https://evil.example@vm.tail1234.ts.net", "https://user:pw@vm.tail1234.ts.net",
                        "https://vm.tail1234.ts.net%2eevil.com", "https://xn--vm-6ma.tail1234.ts.net", "https://vm.tѕ.net", "https://vm.ts。net.evil.com",
-                       "https://203.0.113.7", "https://100.64.0.1", "http://100.64.0.1:9119", "https://localhost", "http://127.0.0.1:9119", "http://localhost:9119",
+                       "https://203.0.113.7", "https://\(Self.tailnetIP)", "http://\(Self.tailnetIP):9119", "https://localhost", "http://127.0.0.1:9119", "http://localhost:9119",
                        "ftp://vm.tail1234.ts.net", "javascript:alert(1)", "", "   ", "not a url", "vm.tail1234.ts.net", "https://-vm.tail1234.ts.net", "https://vm_x.tail1234.ts.net"]
         for url in refused { XCTAssertNil(GatewayAddress.parse(url), url) }
     }

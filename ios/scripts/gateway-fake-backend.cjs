@@ -8,7 +8,9 @@
 // Prints one JSON line {"url","control"}. The control server is plain HTTP on loopback:
 //   GET /drop     close every WebSocket (the app should reconnect and resume)
 //   GET /restart  a Hermes restart: new epoch, every runtime session gone
-//   GET /stop     shut down
+//   GET /stop     go offline: refuse connections and close every socket (the gateway "goes away")
+//   GET /start    come back online on the same port
+//   GET /quit     shut down
 const http = require('node:http');
 const path = require('node:path');
 const { fakeBackend } = require(path.join(__dirname, '../../desktop/test/hermes-auth-fake-backend.cjs'));
@@ -52,7 +54,7 @@ const wordsOf = (text) => text.match(/\S+\s*/g) || [text];
   engine.handle(peer, { method: 'session.activate', params: { session_id: 'sess-1' } });
   engine.handle(peer, { method: 'session.activate', params: { session_id: 'sess-2' } });
   await seed(peer, 'sess-1', 'What is on for Monday?');
-  await seed(peer, 'sess-1', 'Show me an example of a greeting function in code');
+  await seed(peer, 'sess-1', 'Remind me what we decided about the greeting');
   await seed(peer, 'sess-2', 'Draft the release notes headline');
   engine.disconnect(peer);
   be.cfg.deltaMs = deltaMs; // seeded instantly; replies to the app arrive at the requested pace
@@ -61,7 +63,9 @@ const wordsOf = (text) => text.match(/\S+\s*/g) || [text];
     res.end('ok');
     if (req.url === '/drop') be.dropSockets();
     else if (req.url === '/restart') be.restart();
-    else if (req.url === '/stop') be.close().then(() => process.exit(0));
+    else if (req.url === '/stop') { be.server.close(); be.server.closeAllConnections(); be.dropSockets(); }
+    else if (req.url === '/start') be.server.listen(Number(new URL(be.url).port), '127.0.0.1');
+    else if (req.url === '/quit') be.close().then(() => process.exit(0));
   });
   await new Promise((r) => control.listen(Number(arg('--control-port', 0)), '127.0.0.1', r));
   console.log(JSON.stringify({ url: be.url, control: `http://127.0.0.1:${control.address().port}` }));

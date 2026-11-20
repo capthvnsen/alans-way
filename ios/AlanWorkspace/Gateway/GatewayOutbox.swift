@@ -19,7 +19,12 @@ struct GatewayOutboxItem: Codable, Equatable, Identifiable, Sendable {
 /// holds everything behind it until the person decides. Persisted with file protection "complete until first user
 /// authentication"; message text is never logged.
 struct GatewayOutbox: Equatable {
+    #if DEBUG
+    /// UI tests shorten the 30 minutes so "Not sent" can be seen without waiting.
+    static let maxAge: TimeInterval = Double(ProcessInfo.processInfo.environment["GATEWAY_QUEUE_MAX_AGE"] ?? "") ?? 30 * 60
+    #else
     static let maxAge: TimeInterval = 30 * 60
+    #endif
     static let maxItems = 200
     static let maxBytes = 1_048_576
     /// Rows from the history this close to (or after) the first attempt may be its echo.

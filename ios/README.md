@@ -101,6 +101,20 @@ Open an agent's settings by tapping its name. Choose one of the bundled avatars 
 
 Avatar choices are local presentation settings, bound to the bot chat. They apply to the native app and its embedded call page; they do not change the bot's Telegram photo or synchronize desktop-local avatar overrides.
 
+## Alan's Way chat
+
+A second tab beside Telegram talks to your Hermes agent over the same gateway the desktop app uses. Open Workspace settings, then Alan's Way, enter the `https://….ts.net` address Tailscale shows for the Hermes machine, your username and the dashboard password. The password signs you in once and is not kept; the sign-in the gateway returns is stored in the Keychain. Plain `http` and any other host are refused. Tailscale must be connected on the phone.
+
+The tab appears only once a gateway is signed in. Without Telegram set up, Alan's Way is the whole app. A reply that is cut off by a dropped connection resumes from where it stopped; a message sent while offline waits ("Waiting to send"), goes in order when the connection is back, and shows "Not sent" with Retry and Delete after 30 minutes. This build cannot answer approval or clarify requests; answer those from the desktop app.
+
+Gateway tests: the logic tests run with the normal suite. The integration and UI tests need the desktop's fake Hermes backend (fake data, loopback only):
+
+```sh
+ios/scripts/test-gateway-integration.sh YOUR_SIMULATOR_UUID                                  # XCTest integration
+GATEWAY_SHOT_DIR=/tmp/shots ios/scripts/test-gateway-integration.sh YOUR_SIMULATOR_UUID \
+  -only-testing:AlanWorkspaceUITests/GatewayUITests                                         # UI run + screenshots
+```
+
 ## Verification
 
 Local verification on 2026-10-17 used Xcode 27.0 and an iPhone 17 simulator running iOS 26.2. The locally signed simulator build and unsigned arm64 iPhone archive succeeded. All 16 native unit tests, 3 simulator UI tests, 13 backend protocol tests and 12 Mini App tests passed. The repository publication-policy suite also passed all 20 tests, and the voice plugin passed isolated Hermes discovery, import and registration checks. The native suite includes a real Keychain persistence check; these results otherwise use the test boundaries described below.
