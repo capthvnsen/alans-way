@@ -42,8 +42,26 @@ struct AvatarEyes: Equatable, Decodable {
     var travel: Travel
 
     private enum CodingKeys: String, CodingKey { case enabled, style, radius, aspect, left, right, travel }
-    private struct RawPoint: Decodable { var x, y, scaleX, scaleY, rotate: Double? }
-    private struct RawTravel: Decodable { var left, right, up, down: Double? }
+    // One wrong-typed number falls back on its own, as in desktop's per-field `bounded`.
+    private struct RawPoint: Decodable {
+        var x, y, scaleX, scaleY, rotate: Double?
+        enum Keys: String, CodingKey { case x, y, scaleX, scaleY, rotate }
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: Keys.self)
+            x = try? c.decode(Double.self, forKey: .x); y = try? c.decode(Double.self, forKey: .y)
+            scaleX = try? c.decode(Double.self, forKey: .scaleX); scaleY = try? c.decode(Double.self, forKey: .scaleY)
+            rotate = try? c.decode(Double.self, forKey: .rotate)
+        }
+    }
+    private struct RawTravel: Decodable {
+        var left, right, up, down: Double?
+        enum Keys: String, CodingKey { case left, right, up, down }
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: Keys.self)
+            left = try? c.decode(Double.self, forKey: .left); right = try? c.decode(Double.self, forKey: .right)
+            up = try? c.decode(Double.self, forKey: .up); down = try? c.decode(Double.self, forKey: .down)
+        }
+    }
 
     private static func bounded(_ value: Double?, _ low: Double, _ high: Double, _ fallback: Double) -> Double {
         guard let value, value.isFinite else { return fallback }
