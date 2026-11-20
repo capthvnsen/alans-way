@@ -21,10 +21,12 @@ struct AlanWorkspaceApp: App {
         #else
         _gateway = State(initialValue: GatewayStore())
         #endif
+        // UI tests never restore a session, so they start at the setup form rather than waiting on TDLib.
+        let store = TelegramStore(authState: ProcessInfo.processInfo.arguments.contains("--ui-testing") ? .configuring : .starting)
         #if DEBUG
-        _telegram = State(initialValue: ProcessInfo.processInfo.arguments.contains("--interface-preview") ? TelegramStore.interfacePreview() : TelegramStore())
+        _telegram = State(initialValue: ProcessInfo.processInfo.arguments.contains("--interface-preview") ? TelegramStore.interfacePreview() : store)
         #else
-        _telegram = State(initialValue: TelegramStore())
+        _telegram = State(initialValue: store)
         #endif
     }
 

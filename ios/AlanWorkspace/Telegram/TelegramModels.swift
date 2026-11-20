@@ -1,6 +1,8 @@
 import Foundation
 
 public enum TelegramAuthState: Equatable {
+    /// Waiting on TDLib (startup, logging out, closing): nothing to ask the person yet.
+    case starting
     case configuring
     case waitPhoneNumber
     case waitCode

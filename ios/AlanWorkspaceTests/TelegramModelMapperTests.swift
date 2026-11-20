@@ -131,6 +131,23 @@ final class TelegramModelMapperTests: XCTestCase {
         XCTAssertFalse(TelegramHistory.merge(page: [], into: short.messages).hasMore)
     }
 
+    func testWaitingOnTDLibNeverShowsTheCredentialForm() {
+        for waiting in [AuthorizationState.authorizationStateWaitTdlibParameters, .authorizationStateLoggingOut, .authorizationStateClosing] {
+            XCTAssertEqual(TelegramModelMapper.authState(waiting), .starting)
+        }
+        XCTAssertEqual(TelegramModelMapper.authState(.authorizationStateWaitPhoneNumber), .waitPhoneNumber)
+        XCTAssertEqual(TelegramModelMapper.authState(.authorizationStateReady), .ready)
+        XCTAssertEqual(TelegramModelMapper.authState(.authorizationStateClosed), .closed)
+        XCTAssertEqual(TelegramModelMapper.authState(.authorizationStateWaitOtherDeviceConfirmation(
+            AuthorizationStateWaitOtherDeviceConfirmation(link: "tg://login"))), .configuring)
+    }
+
+    @MainActor
+    func testANewStoreWaitsOnTDLibInsteadOfAskingForCredentials() {
+        XCTAssertEqual(TelegramStore().authState, .starting)
+        XCTAssertEqual(TelegramStore(authState: .configuring).authState, .configuring)
+    }
+
     func testTelegramEntitiesBecomeStylesAndLinksWhileStrayAsterisksStayPlain() throws {
         let text = "Compute 2*3*4 then bold www.example.com and docs"
         let content = MessageContent.messageText(MessageText(linkPreview: nil, linkPreviewOptions: nil, text: FormattedText(

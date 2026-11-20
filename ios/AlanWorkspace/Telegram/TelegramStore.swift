@@ -7,7 +7,7 @@ import UIKit
 @MainActor
 @Observable
 public final class TelegramStore {
-    public private(set) var authState: TelegramAuthState = .configuring
+    public private(set) var authState: TelegramAuthState
     public private(set) var chats: [TelegramChat] = []
     public var selectedChatID: Int64?
     public private(set) var messagesByChat: [Int64: [TelegramMessage]] = [:]
@@ -41,7 +41,7 @@ public final class TelegramStore {
     @ObservationIgnored private var pathMonitor: NWPathMonitor?
     @ObservationIgnored private let chatsLoad = SingleFlight()
 
-    public init() {}
+    public init(authState: TelegramAuthState = .starting) { self.authState = authState }
 
     #if DEBUG
     /// Safe simulator-only fixtures for reviewing the interface without a Telegram account.
@@ -413,7 +413,7 @@ public final class TelegramStore {
         parametersRequestInFlight = false
         self.apiID = apiID
         self.apiHash = apiHash
-        authState = .configuring
+        authState = .starting
     }
 
     /// TDLib asks to be told about every network change so it reconnects at once instead of after its retry backoff.
@@ -436,27 +436,16 @@ public final class TelegramStore {
     private func consume(_ update: Update, receivedBy client: TDLibClient) async {
         switch update {
         case .updateAuthorizationState(let value):
+            authState = TelegramModelMapper.authState(value.authorizationState)
             switch value.authorizationState {
             case .authorizationStateWaitTdlibParameters:
                 waitingForParameters = true
                 do { try await configureParameters(for: client) }
                 catch { fail(error) }
-            case .authorizationStateWaitPhoneNumber:
-                authState = .waitPhoneNumber
-            case .authorizationStateWaitCode:
-                authState = .waitCode
-            case .authorizationStateWaitPassword:
-                authState = .waitPassword
-            case .authorizationStateWaitEmailAddress:
-                authState = .waitEmailAddress
-            case .authorizationStateWaitEmailCode:
-                authState = .waitEmailCode
             case .authorizationStateReady:
-                authState = .ready
                 if let me = try? await client.getMe() { userID = me.id }
                 Task { try? await loadChats() }
             case .authorizationStateClosed:
-                authState = .closed
                 chats.removeAll()
                 messagesByChat.removeAll()
                 historyLoadedChatIDs.removeAll()
@@ -467,7 +456,7 @@ public final class TelegramStore {
                 waitingForParameters = false
                 parametersRequestInFlight = false
             default:
-                authState = .configuring
+                break
             }
         case .updateConnectionState(let value):
             let wasOffline = connectionStatus != nil
@@ -720,6 +709,21 @@ public final class TelegramStore {
 }
 
 enum TelegramModelMapper {
+    /// States that only wait on TDLib map to `.starting`, so the app-credentials form shows only when it is really needed.
+    static func authState(_ state: AuthorizationState) -> TelegramAuthState {
+        switch state {
+        case .authorizationStateWaitPhoneNumber: .waitPhoneNumber
+        case .authorizationStateWaitCode: .waitCode
+        case .authorizationStateWaitPassword: .waitPassword
+        case .authorizationStateWaitEmailAddress: .waitEmailAddress
+        case .authorizationStateWaitEmailCode: .waitEmailCode
+        case .authorizationStateReady: .ready
+        case .authorizationStateClosed: .closed
+        case .authorizationStateWaitTdlibParameters, .authorizationStateLoggingOut, .authorizationStateClosing: .starting
+        default: .configuring
+        }
+    }
+
     static func connectionStatus(_ state: ConnectionState) -> String? {
         switch state {
         case .connectionStateWaitingForNetwork: "Waiting for network…"
