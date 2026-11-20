@@ -2465,14 +2465,39 @@ new ResizeObserver(scheduleLayout).observe($('shell'));
 new ResizeObserver(() => fitTabs()).observe($('tabs'));
 // Terminal: one xterm per bot, kept hidden when not shown so scrollback survives tab and bot switches. A shell starts only from
 // the tab click, its shortcut or the Start button; restoring the tab or switching bots never starts one.
+// xterm (~485 KB) is loaded lazily on first terminal open or output so cold boot does not parse it.
 const terminalViews = new Map();
-let terminalFocus = false, terminalLast = { id: '', shown: false };
+const terminalPending = new Map();
+let terminalFocus = false, terminalLast = { id: '', shown: false }, xtermLoader = null;
+function loadXterm() {
+  if (typeof window.Terminal === 'function' && window.FitAddon?.FitAddon) return Promise.resolve();
+  if (xtermLoader) return xtermLoader;
+  const loadScript = (src) => new Promise((resolve, reject) => {
+    const el = document.createElement('script'); el.src = src; el.onload = resolve; el.onerror = () => reject(new Error(`Failed to load ${src}`)); document.head.append(el);
+  });
+  const link = document.createElement('link'); link.rel = 'stylesheet'; link.href = '../node_modules/@xterm/xterm/css/xterm.css'; document.head.append(link);
+  xtermLoader = loadScript('../node_modules/@xterm/xterm/lib/xterm.js')
+    .then(() => loadScript('../node_modules/@xterm/addon-fit/lib/addon-fit.js'))
+    .then(() => {
+      for (const [id, events] of terminalPending) {
+        const view = terminalView(id);
+        for (const ev of events) {
+          if (ev.type === 'data') view.term.write(ev.data);
+          else { view.term.write('\r\n[Session ended]\r\n'); view.size = ''; }
+        }
+      }
+      terminalPending.clear();
+      if (state) renderTerminal();
+    })
+    .catch((error) => { xtermLoader = null; toast(error.message); });
+  return xtermLoader;
+}
 function terminalView(id) {
   let view = terminalViews.get(id);
   if (!view) {
     const host = document.createElement('div'); host.className = 'terminal-host hidden'; $('terminal-panel').append(host);
-    const term = new Terminal({ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace', fontSize: 12.5, cursorBlink: true, scrollback: 5000, theme: { background: '#09090a' } });
-    const fit = new FitAddon.FitAddon(); term.loadAddon(fit);
+    const term = new window.Terminal({ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace', fontSize: 12.5, cursorBlink: true, scrollback: 5000, theme: { background: '#09090a' } });
+    const fit = new window.FitAddon.FitAddon(); term.loadAddon(fit);
     term.onData((data) => window.terminal.input(id, data));
     term.attachCustomKeyEventHandler((event) => {
       if (event.type !== 'keydown' || event.key.toLowerCase() !== 'c' || !term.hasSelection() || !(event.metaKey || (event.ctrlKey && event.shiftKey))) return true;
@@ -2498,12 +2523,13 @@ function renderTerminal() {
   $('terminal-idle').classList.toggle('hidden', !on || live);
   if (on && !live) renderTerminalIdle(ended);
   if (on && ended) fitTerminal(id);
+  if (!on) { terminalFocus = false; terminalLast = { id, shown: false }; return; }
+  if (!live) { terminalLast = { id, shown: false }; return; }
+  if (typeof window.Terminal !== 'function' || !window.FitAddon?.FitAddon) { loadXterm(); return; }
   // Focus follows a deliberate open (tab click, its shortcut, Start) on the same bot, never a bot switch or arrow keys on the strip.
-  const arrived = on && live && !(terminalLast.id === id && terminalLast.shown);
+  const arrived = !(terminalLast.id === id && terminalLast.shown);
   const focus = terminalFocus || (arrived && terminalLast.id === id && !$('canvas-tabs').contains(document.activeElement));
-  terminalLast = { id, shown: on && live };
-  if (!on) terminalFocus = false;
-  if (!on || !live) return;
+  terminalLast = { id, shown: true };
   const view = terminalView(id);
   view.host.classList.remove('hidden');
   if (!view.opened) { view.term.open(view.host); view.opened = true; }
@@ -2516,9 +2542,18 @@ function renderTerminalIdle(ended) {
   $('terminal-start').textContent = ended ? 'Restart terminal' : 'Start terminal';
   $('terminal-start').hidden = windows;
 }
-$('terminal-start').onclick = () => { terminalFocus = true; window.terminal.start(state.selectedBotId || '_'); };
-window.terminal.onData((id, data) => terminalView(id).term.write(data));
-window.terminal.onExit((id) => { const view = terminalViews.get(id); if (view) { view.term.write('\r\n[Session ended]\r\n'); view.size = ''; } });
+$('terminal-start').onclick = () => { terminalFocus = true; loadXterm(); window.terminal.start(state.selectedBotId || '_'); };
+window.terminal.onData((id, data) => {
+  if (typeof window.Terminal === 'function' && window.FitAddon?.FitAddon) { terminalView(id).term.write(data); return; }
+  const list = terminalPending.get(id) || []; list.push({ type: 'data', data }); terminalPending.set(id, list); loadXterm();
+});
+window.terminal.onExit((id) => {
+  if (typeof window.Terminal === 'function' && window.FitAddon?.FitAddon) {
+    const view = terminalViews.get(id); if (view) { view.term.write('\r\n[Session ended]\r\n'); view.size = ''; }
+    return;
+  }
+  const list = terminalPending.get(id); if (list) list.push({ type: 'exit' });
+});
 new ResizeObserver(() => { for (const id of terminalViews.keys()) fitTerminal(id); }).observe($('terminal-panel'));
 // A narrow pane scrolls the Canvas strip; keep the selected tab in view.
 function showSelectedCanvasTab() { $('canvas-tabs').querySelector('[aria-selected=true]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' }); }
