@@ -19,6 +19,8 @@ function fixtureBinary(t) {
     ['AXUIElementCopyAttributeValue(', 'fixtureAttribute('],
     ['AXUIElementCopyMultipleAttributeValues(', 'fixtureAttributes('],
     ['AXUIElementPerformAction(', 'fixturePerform('],
+    ['AXUIElementCopyElementAtPosition(', 'fixtureAt('],
+    ['AXUIElementCopyActionNames(', 'fixtureActionNames('],
     ['AXUIElementSetAttributeValue(', 'fixtureSet('],
     ['AXUIElementIsAttributeSettable(', 'fixtureSettable('],
     ['CGWindowListCopyWindowInfo(', 'fixtureWindows('],

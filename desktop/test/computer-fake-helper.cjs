@@ -15,6 +15,7 @@ const handle = (request) => {
   if (mode === 'bad-menu' && request.cmd === 'menu') return reply({ id: request.id, ok: false, code: 'not_found', error: 'No such menu item.' });
   if (mode === 'reject-settle' && request.cmd === 'act' && request.settleMs !== undefined) return reply({ id: request.id, ok: false, code: 'bad_request', error: 'settleMs sent' });
   if (mode === 'crash-mid-act' && request.cmd === 'act') process.exit(3);
+  if (mode === 'press-may-have-run' && request.cmd === 'act') return reply({ id: request.id, ok: true, results: [{ ok: false, code: 'unresponsive', error: `The app did not answer the press, so it may have run (act ${++misses}).` }] });
   if (request.cmd === 'apps') return reply({ id: request.id, ok: true, apps: [
     { name: 'X', bundleId: 'x', pid: process.pid, frontmost: false }, { name: 'Front', bundleId: 'front', pid: 3, frontmost: true },
     { name: '1Password', bundleId: 'com.1password.1password', pid: 4, frontmost: false }, { name: 'Device Hub', bundleId: 'com.apple.dt.Devices', pid: -1, frontmost: false },

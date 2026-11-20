@@ -759,14 +759,20 @@ func eventClick(_ pid: pid_t, _ element: AXUIElement) throws -> String {
     return "event"
 }
 
+// An action that opens a modal can block past the messaging timeout and still have run, so cannotComplete is not a refusal:
+// nothing may be tried after it (another press, an ancestor, a mouse click).
+func performAX(_ element: AXUIElement, _ action: String) throws -> AXError {
+    let result = AXUIElementPerformAction(element, action as CFString)
+    if result == .cannotComplete { throw pressMayHaveRun }
+    return result
+}
+
 func pressElement(_ pid: pid_t, _ element: AXUIElement, role: String) throws -> String {
-    let result = AXUIElementPerformAction(element, "AXPress" as CFString)
+    let result = try performAX(element, "AXPress")
     if result == .success { return "ax" }
     if result == .invalidUIElement { throw Fail("stale_ref", "That control is gone. Take a fresh snapshot.") }
-    // A press that opens a modal can block past the messaging timeout, so it may have run: pressing again would be a second press.
-    if result == .cannotComplete { throw pressMayHaveRun }
     if role == "AXRow" || role == "AXCell" || role == "AXOutlineRow", selectRow(element) { return "select" }
-    if let ancestor = pressableAncestor(element), AXUIElementPerformAction(ancestor, "AXPress" as CFString) == .success { return "ancestor" }
+    if let ancestor = pressableAncestor(element), try performAX(ancestor, "AXPress") == .success { return "ancestor" }
     return try eventClick(pid, element)
 }
 
@@ -972,8 +978,7 @@ func pressMenu(_ pid: pid_t, _ path: [String]) throws {
     guard !path.isEmpty else { throw Fail("bad_request", "menu needs a path.") }
     let item = try menuItem(pid, path)
     if (axValue(item, "AXEnabled") as? NSNumber)?.boolValue == false { throw Fail("failed", "That menu item is disabled.") }
-    let result = AXUIElementPerformAction(item, "AXPress" as CFString)
-    if result == .cannotComplete { throw pressMayHaveRun }
+    let result = try performAX(item, "AXPress")
     if result != .success { throw Fail("failed", "Press failed (\(result.rawValue)).") }
 }
 
@@ -1303,7 +1308,7 @@ func runStep(_ pid: pid_t, _ step: JSON, windowId: CGWindowID?) throws -> JSON {
         guard let action = step["secondaryAction"] as? String, secondaryActions.contains(action), actionNames(node.element).contains(action) else {
             throw Fail("unsupported_action", "That control does not advertise that action.")
         }
-        let result = AXUIElementPerformAction(node.element, action as CFString)
+        let result = try performAX(node.element, action)
         guard result == .success else { throw Fail("failed", "The app could not perform that action (\(result.rawValue)).") }
         out["via"] = "ax"
     case "type":
@@ -1347,8 +1352,8 @@ func runStep(_ pid: pid_t, _ step: JSON, windowId: CGWindowID?) throws -> JSON {
         if let element = elementAt(pid, point) {
             if isSecure(element) { throw Fail("off_limits", "Password fields are off limits.") }
             try rejectSecureFocusForMenu(pid, element)
-            if AXUIElementPerformAction(element, "AXPress" as CFString) == .success { out["via"] = "ax" }
-            else if let ancestor = pressableAncestor(element), AXUIElementPerformAction(ancestor, "AXPress" as CFString) == .success { out["via"] = "ancestor" }
+            if try performAX(element, "AXPress") == .success { out["via"] = "ax" }
+            else if let ancestor = pressableAncestor(element), try performAX(ancestor, "AXPress") == .success { out["via"] = "ancestor" }
         }
         if out["via"] == nil {
             postMouse(pid, axToQuartz(point), button: .left, clicks: 1, dragTo: nil)
@@ -1358,7 +1363,7 @@ func runStep(_ pid: pid_t, _ step: JSON, windowId: CGWindowID?) throws -> JSON {
         let target = try pointOrRef(pid, step)
         if let node = target.node { try rejectSecure(node) }
         try rejectSecureFocusForMenu(pid, target.element)
-        if let element = target.element, actionNames(element).contains("AXOpen"), AXUIElementPerformAction(element, "AXOpen" as CFString) == .success { out["via"] = "ax" }
+        if let element = target.element, actionNames(element).contains("AXOpen"), try performAX(element, "AXOpen") == .success { out["via"] = "ax" }
         else {
             postMouse(pid, axToQuartz(target.point), button: .left, clicks: 2, dragTo: nil)
             out["via"] = "event"
@@ -1367,7 +1372,7 @@ func runStep(_ pid: pid_t, _ step: JSON, windowId: CGWindowID?) throws -> JSON {
         let target = try pointOrRef(pid, step)
         if let node = target.node { try rejectSecure(node) }
         try rejectSecureFocusForMenu(pid, target.element)
-        if let element = target.element, AXUIElementPerformAction(element, "AXShowMenu" as CFString) == .success { out["via"] = "ax" }
+        if let element = target.element, try performAX(element, "AXShowMenu") == .success { out["via"] = "ax" }
         else {
             postMouse(pid, axToQuartz(target.point), button: .right, clicks: 1, dragTo: nil)
             out["via"] = "event"
