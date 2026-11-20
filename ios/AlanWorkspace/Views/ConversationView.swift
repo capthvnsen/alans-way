@@ -20,6 +20,7 @@ struct ConversationView: View {
     @State private var showCallComputer = false
     @FocusState private var composerFocused: Bool
     @ScaledMetric(relativeTo: .body) private var composerSize: CGFloat = 15
+    @ScaledMetric(relativeTo: .body) private var sendSize: CGFloat = 36
 
     private var messages: [TelegramMessage] { telegram.messagesByChat[chat.id] ?? [] }
 
@@ -41,18 +42,19 @@ struct ConversationView: View {
                     HStack(spacing: 10) {
                         AgentPortrait(name: settings.avatar(for: chat.id), size: 34)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(chat.title).font(.system(size: 15, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
-                            Text("Telegram bot").font(.system(size: 10)).foregroundStyle(WorkspaceTheme.secondary)
+                            Text(chat.title).scaledFont(15, weight: .semibold).foregroundStyle(.white).lineLimit(1)
+                            Text("Telegram bot").scaledFont(10).foregroundStyle(WorkspaceTheme.secondary)
                         }
                     }
                 }.accessibilityLabel("\(chat.title), agent settings").accessibilityIdentifier("agentSettings")
+                    .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
             }
             ToolbarItemGroup(placement: .topBarTrailing) {
-                Button { showComputer = true } label: { Image(systemName: "desktopcomputer").font(.system(size: 16)) }
+                Button { showComputer = true } label: { Image(systemName: "desktopcomputer").scaledFont(16) }
                     .accessibilityLabel("View agent computer").accessibilityIdentifier("agentComputer")
                 Button { requestCall() } label: {
                     if preparingCall { ProgressView().frame(width: 21) }
-                    else { Image(systemName: "phone.fill").font(.system(size: 16)) }
+                    else { Image(systemName: "phone.fill").scaledFont(16) }
                 }.accessibilityLabel("Call \(chat.title)").accessibilityIdentifier("agentCall").disabled(preparingCall)
             }
         }
@@ -132,9 +134,9 @@ struct ConversationView: View {
                         } else {
                             VStack(spacing: 18) {
                                 AgentPortrait(name: settings.avatar(for: chat.id), size: 100)
-                                Text("A familiar conversation.").font(.system(size: 24, weight: .medium, design: .serif))
+                                Text("A familiar conversation.").scaledFont(24, weight: .medium, design: .serif)
                                 Text("Send a message to \(chat.title).\nIt appears in your Telegram chat everywhere.")
-                                    .font(.system(size: 13)).foregroundStyle(WorkspaceTheme.secondary).multilineTextAlignment(.center).lineSpacing(4)
+                                    .scaledFont(13).foregroundStyle(WorkspaceTheme.secondary).multilineTextAlignment(.center).lineSpacing(4)
                             }.frame(maxWidth: .infinity).padding(.top, 80)
                         }
                     }
@@ -161,15 +163,15 @@ struct ConversationView: View {
     private var composer: some View {
         HStack(alignment: .bottom, spacing: 12) {
             Button { showFilePicker = true } label: {
-                Image(systemName: "plus").font(.system(size: 20)).frame(width: 34, height: 43)
+                Image(systemName: "plus").scaledFont(20).frame(minWidth: 34, minHeight: 43)
             }.accessibilityLabel("Attach a file")
             TextField("Message \(chat.title)", text: $draft, axis: .vertical)
                 .font(.system(size: composerSize)).lineLimit(1...6).focused($composerFocused)
                 .padding(.vertical, 12)
                 .accessibilityIdentifier("messageComposer")
             Button(action: send) {
-                Image(systemName: "arrow.up").font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(WorkspaceTheme.background).frame(width: 36, height: 36)
+                Image(systemName: "arrow.up").scaledFont(16, weight: .semibold)
+                    .foregroundStyle(WorkspaceTheme.background).frame(width: sendSize, height: sendSize)
                     .background(WorkspaceTheme.mint, in: Circle())
             }
             .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || telegram.isSending)
@@ -287,7 +289,7 @@ private struct MessageBubble: View {
                 Image(uiImage: image).resizable().scaledToFit().frame(maxHeight: 300).clipShape(RoundedRectangle(cornerRadius: 10))
             } else {
                 Label(attachmentTitle(attachment.kind), systemImage: attachmentIcon(attachment.kind))
-                    .font(.system(size: 14)).padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                    .scaledFont(14).padding(12).frame(maxWidth: .infinity, alignment: .leading)
                     .background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
             }
         }.buttonStyle(.plain).accessibilityLabel("Open \(attachmentTitle(attachment.kind))")

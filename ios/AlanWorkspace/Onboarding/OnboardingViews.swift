@@ -4,13 +4,15 @@ struct OnboardingStepLabel: View {
     let text: String
 
     var body: some View {
-        Text(text).font(.system(size: 10, weight: .semibold, design: .monospaced)).tracking(1.5)
+        Text(text).scaledFont(10, weight: .semibold, design: .monospaced).tracking(1.5)
             .foregroundStyle(WorkspaceTheme.mint)
     }
 }
 
 struct OnboardingWelcomeView: View {
     @Environment(TelegramStore.self) private var telegram
+    @Environment(\.dynamicTypeSize) private var typeSize
+    @ScaledMetric(relativeTo: .caption) private var badge: CGFloat = 26
     let onStart: () -> Void
 
     var body: some View {
@@ -18,17 +20,19 @@ struct OnboardingWelcomeView: View {
             VStack(alignment: .leading, spacing: 24) {
                 HStack(spacing: 10) {
                     Image(systemName: "circle.hexagongrid.fill").foregroundStyle(WorkspaceTheme.mint)
-                    Text("ALAN’S WORKSPACE").font(.system(size: 11, weight: .semibold, design: .monospaced)).tracking(2)
+                    Text("ALAN’S WORKSPACE").scaledFont(11, weight: .semibold, design: .monospaced).tracking(2)
                 }
                 .padding(.top, 24)
 
-                Image("hermes").resizable().scaledToFit().frame(height: 190).frame(maxWidth: .infinity)
-                    .accessibilityHidden(true)
+                if !typeSize.isAccessibilitySize {
+                    Image("hermes").resizable().scaledToFit().frame(height: 190).frame(maxWidth: .infinity)
+                        .accessibilityHidden(true)
+                }
 
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("Your workspace,\nwherever you are.").font(.system(size: 34, weight: .medium, design: .serif)).tracking(-0.7)
+                    Text("Your workspace,\nwherever you are.").scaledFont(34, weight: .medium, design: .serif).tracking(-0.7)
                     Text("Chat, call, and watch your Hermes agents work. Setup takes a few minutes and needs the phone where you use Telegram.")
-                        .font(.system(size: 15)).foregroundStyle(WorkspaceTheme.secondary).lineSpacing(5)
+                        .scaledFont(15).foregroundStyle(WorkspaceTheme.secondary).lineSpacing(5)
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
@@ -54,12 +58,12 @@ struct OnboardingWelcomeView: View {
 
     private func step(_ number: Int, _ title: String, _ detail: String) -> some View {
         HStack(alignment: .top, spacing: 14) {
-            Text("\(number)").font(.system(size: 13, weight: .semibold, design: .monospaced))
-                .frame(width: 26, height: 26).background(WorkspaceTheme.surface, in: Circle())
+            Text("\(number)").scaledFont(13, weight: .semibold, design: .monospaced)
+                .frame(width: badge, height: badge).background(WorkspaceTheme.surface, in: Circle())
                 .foregroundStyle(WorkspaceTheme.mint)
             VStack(alignment: .leading, spacing: 3) {
-                Text(title).font(.system(size: 15, weight: .semibold))
-                Text(detail).font(.system(size: 13)).foregroundStyle(WorkspaceTheme.secondary)
+                Text(title).scaledFont(15, weight: .semibold)
+                Text(detail).scaledFont(13).foregroundStyle(WorkspaceTheme.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -112,7 +116,7 @@ struct OnboardingBotSetupView: View {
             ProgressView("Loading your conversations…").frame(maxWidth: .infinity).padding(.vertical, 20)
         } else if bots.isEmpty {
             Text("No bot conversations yet. Open your bot by its username below.")
-                .font(.system(size: 14)).foregroundStyle(WorkspaceTheme.secondary)
+                .scaledFont(14).foregroundStyle(WorkspaceTheme.secondary)
         } else {
             VStack(spacing: 10) {
                 ForEach(bots) { bot in
@@ -125,7 +129,7 @@ struct OnboardingBotSetupView: View {
         }
 
         VStack(alignment: .leading, spacing: 8) {
-            Text("OPEN A BOT BY USERNAME").font(.system(size: 10, weight: .semibold, design: .monospaced)).tracking(1.5)
+            Text("OPEN A BOT BY USERNAME").scaledFont(10, weight: .semibold, design: .monospaced).tracking(1.5)
                 .foregroundStyle(WorkspaceTheme.secondary)
             HStack(spacing: 10) {
                 TextField("@your_hermes_bot", text: $username)
@@ -203,8 +207,8 @@ struct OnboardingBotSetupView: View {
 
     private func header(_ title: String, _ detail: String) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(title).font(.system(size: 30, weight: .medium, design: .serif)).tracking(-0.6)
-            Text(detail).font(.system(size: 15)).foregroundStyle(WorkspaceTheme.secondary).lineSpacing(4)
+            Text(title).scaledFont(30, weight: .medium, design: .serif).tracking(-0.6)
+            Text(detail).scaledFont(15).foregroundStyle(WorkspaceTheme.secondary).lineSpacing(4)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -213,14 +217,14 @@ struct OnboardingBotSetupView: View {
         HStack(spacing: 14) {
             AgentPortrait(name: settings.avatar(for: bot.id), size: 48)
             VStack(alignment: .leading, spacing: 4) {
-                Text(bot.title).font(.system(size: 16, weight: .semibold)).lineLimit(1)
+                Text(bot.title).scaledFont(16, weight: .semibold).lineLimit(1)
                 if let username = bot.username {
-                    Text("@\(username)").font(.system(size: 12)).foregroundStyle(WorkspaceTheme.secondary).lineLimit(1)
+                    Text("@\(username)").scaledFont(12).foregroundStyle(WorkspaceTheme.secondary).lineLimit(1)
                 }
             }
             Spacer(minLength: 0)
             Image(systemName: selectedChatID == bot.id ? "checkmark.circle.fill" : "circle")
-                .font(.system(size: 20)).foregroundStyle(selectedChatID == bot.id ? WorkspaceTheme.mint : WorkspaceTheme.secondary)
+                .scaledFont(20).foregroundStyle(selectedChatID == bot.id ? WorkspaceTheme.mint : WorkspaceTheme.secondary)
         }
         .padding(14)
         .background(WorkspaceTheme.surface)
@@ -233,9 +237,9 @@ struct OnboardingBotSetupView: View {
                               result: ConnectionCheck.Outcome?, busy: Bool, identifier: String,
                               check: @escaping () async -> Void) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(title).font(.system(size: 10, weight: .semibold, design: .monospaced)).tracking(1.5)
+            Text(title).scaledFont(10, weight: .semibold, design: .monospaced).tracking(1.5)
                 .foregroundStyle(WorkspaceTheme.secondary)
-            Text(detail).font(.system(size: 13)).foregroundStyle(WorkspaceTheme.secondary).lineSpacing(3)
+            Text(detail).scaledFont(13).foregroundStyle(WorkspaceTheme.secondary).lineSpacing(3)
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 10) {
                 TextField(placeholder, text: address)

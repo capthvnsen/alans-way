@@ -10,6 +10,7 @@ struct GatewayChatView: View {
     @State private var errorText: String?
     @FocusState private var composerFocused: Bool
     @ScaledMetric(relativeTo: .body) private var composerSize: CGFloat = 15
+    @ScaledMetric(relativeTo: .body) private var sendSize: CGFloat = 36
 
     private var messages: [GatewayMessage] { gateway.messages(for: conversationID) }
     private var thread: GatewayThread { gateway.thread(conversationID) }
@@ -43,6 +44,7 @@ struct GatewayChatView: View {
                     }
                 }
                 .accessibilityElement(children: .combine).accessibilityLabel("\(title), Alan’s Way")
+                .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
             }
         }
         .task(id: conversationID) { gateway.open(conversationID) }
@@ -91,7 +93,7 @@ struct GatewayChatView: View {
             .overlay(alignment: .bottomTrailing) {
                 if !atBottom {
                     Button { scrollToBottom(proxy) } label: {
-                        Image(systemName: "arrow.down").font(.system(size: 16, weight: .semibold)).frame(width: 44, height: 44)
+                        Image(systemName: "arrow.down").scaledFont(16, weight: .semibold).frame(minWidth: 44, minHeight: 44)
                             .background(WorkspaceTheme.raised, in: Circle()).overlay(Circle().stroke(WorkspaceTheme.line))
                     }
                     .padding(16).accessibilityLabel("Scroll to the latest message").accessibilityIdentifier("gatewayScrollToBottom")
@@ -119,9 +121,9 @@ struct GatewayChatView: View {
                 .padding(.vertical, 12).padding(.leading, 6)
                 .accessibilityLabel("Message Alan").accessibilityIdentifier("gatewayComposer")
             Button(action: send) {
-                Image(systemName: "arrow.up").font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(WorkspaceTheme.background).frame(width: 36, height: 36)
-                    .background(WorkspaceTheme.mint, in: Circle()).frame(width: 44, height: 44).contentShape(Rectangle())
+                Image(systemName: "arrow.up").scaledFont(16, weight: .semibold)
+                    .foregroundStyle(WorkspaceTheme.background).frame(width: sendSize, height: sendSize)
+                    .background(WorkspaceTheme.mint, in: Circle()).frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
             }
             .disabled(!canSend).opacity(canSend ? 1 : 0.4)
             .accessibilityLabel("Send message").accessibilityIdentifier("gatewaySend")

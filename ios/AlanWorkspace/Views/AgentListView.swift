@@ -19,27 +19,27 @@ struct AgentListView: View {
                 VStack(alignment: .leading, spacing: 24) {
                     HStack {
                         VStack(alignment: .leading, spacing: 7) {
-                            Text("YOUR WORKSPACE").font(.system(size: 10, weight: .medium, design: .monospaced)).tracking(2)
+                            Text("YOUR WORKSPACE").scaledFont(10, weight: .medium, design: .monospaced).tracking(2)
                                 .foregroundStyle(WorkspaceTheme.secondary)
-                            Text("Your agents").font(.system(size: 36, weight: .medium, design: .serif)).tracking(-0.7)
+                            Text("Your agents").scaledFont(36, weight: .medium, design: .serif).tracking(-0.7)
                         }
                         Spacer()
                         Button { showSettings = true } label: {
-                            Image(systemName: "slider.horizontal.3").font(.system(size: 19)).frame(width: 46, height: 46)
+                            Image(systemName: "slider.horizontal.3").scaledFont(19).frame(minWidth: 46, minHeight: 46)
                                 .background(WorkspaceTheme.surface, in: Circle())
                         }.accessibilityLabel("Workspace settings").accessibilityIdentifier("workspaceSettings")
                     }
 
                     HStack(spacing: 11) {
                         Image(systemName: "magnifyingglass").foregroundStyle(WorkspaceTheme.secondary)
-                        TextField("Find an agent", text: $search).font(.system(size: 15))
+                        TextField("Find an agent", text: $search).scaledFont(15)
                             .textInputAutocapitalization(.never).autocorrectionDisabled()
                     }.modifier(WorkspaceField())
 
                     HStack(spacing: 7) {
                         Circle().fill(WorkspaceTheme.mint).frame(width: 5, height: 5)
                         Text("Your conversations, connected through Telegram")
-                            .font(.system(size: 11)).foregroundStyle(WorkspaceTheme.secondary)
+                            .scaledFont(11).foregroundStyle(WorkspaceTheme.secondary)
                     }
 
                     if telegram.isLoadingChats && agents.isEmpty {
@@ -67,8 +67,8 @@ struct AgentListView: View {
 
                     Button { showAddBot = true } label: {
                         HStack(spacing: 10) {
-                            Image(systemName: "plus").font(.system(size: 15))
-                            Text("Open another bot").font(.system(size: 14, weight: .medium))
+                            Image(systemName: "plus").scaledFont(15)
+                            Text("Open another bot").scaledFont(14, weight: .medium)
                         }.frame(maxWidth: .infinity).padding(.vertical, 20)
                             .overlay(RoundedRectangle(cornerRadius: 20).stroke(WorkspaceTheme.line, style: StrokeStyle(lineWidth: 1, dash: [5, 5])))
                     }.foregroundStyle(WorkspaceTheme.secondary)
@@ -122,24 +122,27 @@ struct ConnectionBanner: View {
 private struct AgentRow: View {
     let chat: TelegramChat
     let avatar: String
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
-        HStack(spacing: 16) {
+        // At accessibility sizes the text needs the full row width, so the portrait moves above it.
+        let layout = typeSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12)) : AnyLayout(HStackLayout(spacing: 16))
+        layout {
             AgentPortrait(name: avatar, size: 68)
             VStack(alignment: .leading, spacing: 7) {
                 HStack {
-                    Text(chat.title).font(.system(size: 17, weight: .semibold)).lineLimit(1)
+                    Text(chat.title).scaledFont(17, weight: .semibold).lineLimit(typeSize.isAccessibilitySize ? 3 : 1)
                     Spacer(minLength: 0)
                     if chat.unreadCount > 0 {
                         Text(chat.unreadCount > 99 ? "99+" : "\(chat.unreadCount)")
-                            .font(.system(size: 10, weight: .bold)).foregroundStyle(WorkspaceTheme.background)
+                            .scaledFont(10, weight: .bold).foregroundStyle(WorkspaceTheme.background)
                             .padding(.horizontal, 6).padding(.vertical, 3).background(WorkspaceTheme.mint, in: Capsule())
                     }
                 }
                 Text(chat.lastMessagePreview.isEmpty ? "Pick up your conversation" : chat.lastMessagePreview)
-                    .font(.system(size: 13)).foregroundStyle(WorkspaceTheme.secondary).lineLimit(2).lineSpacing(3)
+                    .scaledFont(13).foregroundStyle(WorkspaceTheme.secondary).lineLimit(2).lineSpacing(3)
             }
-            Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold)).foregroundStyle(WorkspaceTheme.secondary)
+            Image(systemName: "chevron.right").scaledFont(11, weight: .semibold).foregroundStyle(WorkspaceTheme.secondary)
         }
         .padding(16)
         .background(WorkspaceTheme.surface)
@@ -243,7 +246,7 @@ private struct LicenseNoticesView: View {
     }
     var body: some View {
         ScrollView {
-            Text(notices).font(.system(size: 11, design: .monospaced)).textSelection(.enabled).padding(20)
+            Text(notices).scaledFont(11, design: .monospaced).textSelection(.enabled).padding(20)
         }.background(WorkspaceTheme.background).navigationTitle("Licenses").navigationBarTitleDisplayMode(.inline)
     }
 }

@@ -25,7 +25,7 @@ struct WorkspaceRootView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             if telegram.isInterfacePreview {
                 Text("INTERFACE PREVIEW · SAMPLE DATA")
-                    .font(.system(size: 9, weight: .semibold, design: .monospaced)).tracking(1)
+                    .scaledFont(9, weight: .semibold, design: .monospaced).tracking(1)
                     .foregroundStyle(WorkspaceTheme.mint)
                     .frame(maxWidth: .infinity).padding(7).background(WorkspaceTheme.surface)
             }
@@ -83,6 +83,8 @@ struct TelegramSignInView: View {
     @State private var busy = false
     @State private var errorText: String?
     @State private var changingNumber = false
+    @Environment(\.dynamicTypeSize) private var typeSize
+    @ScaledMetric(relativeTo: .caption) private var badge: CGFloat = 24
 
     private var title: String {
         if changingNumber { return "Try another number" }
@@ -117,12 +119,12 @@ struct TelegramSignInView: View {
                 VStack(alignment: .leading, spacing: 24) {
                     HStack(spacing: 10) {
                         Image(systemName: "circle.hexagongrid.fill").foregroundStyle(WorkspaceTheme.mint)
-                        Text("ALAN’S WORKSPACE").font(.system(size: 11, weight: .semibold, design: .monospaced)).tracking(2)
+                        Text("ALAN’S WORKSPACE").scaledFont(11, weight: .semibold, design: .monospaced).tracking(2)
                         Spacer()
                     }
                     .padding(.top, 24)
 
-                    if !showsAppCredentials {
+                    if !showsAppCredentials && !typeSize.isAccessibilitySize {
                         ZStack {
                             Circle().fill(WorkspaceTheme.mint.opacity(0.035)).frame(width: 270, height: 270)
                             Circle().stroke(WorkspaceTheme.mint.opacity(0.13), lineWidth: 0.5).frame(width: 265, height: 265)
@@ -135,9 +137,9 @@ struct TelegramSignInView: View {
 
                     VStack(alignment: .leading, spacing: 12) {
                         if !settings.hasCompletedOnboarding && telegram.authState != .closed && telegram.authState != .starting { OnboardingStepLabel(text: step) }
-                        Text(title).font(.system(size: 34, weight: .medium, design: .serif)).tracking(-0.7)
+                        Text(title).scaledFont(34, weight: .medium, design: .serif).tracking(-0.7)
                         Text(explanation)
-                            .font(.system(size: 15)).foregroundStyle(WorkspaceTheme.secondary).lineSpacing(5)
+                            .scaledFont(15).foregroundStyle(WorkspaceTheme.secondary).lineSpacing(5)
                             .fixedSize(horizontal: false, vertical: true)
                     }
 
@@ -187,7 +189,7 @@ struct TelegramSignInView: View {
                     }
                     Spacer(minLength: 12)
                     Text("CONNECTED THROUGH TELEGRAM")
-                        .font(.system(size: 9, weight: .medium, design: .monospaced)).tracking(1.7)
+                        .scaledFont(9, weight: .medium, design: .monospaced).tracking(1.7)
                         .foregroundStyle(WorkspaceTheme.secondary).frame(maxWidth: .infinity)
                 }
                 .padding(.horizontal, 28)
@@ -247,7 +249,7 @@ struct TelegramSignInView: View {
                 instruction(1, "Open my.telegram.org and log in with your Telegram phone number.")
                 Link(destination: URL(string: "https://my.telegram.org/apps")!) {
                     Label("Open my.telegram.org/apps", systemImage: "arrow.up.right.square")
-                        .font(.system(size: 14, weight: .medium))
+                        .scaledFont(14, weight: .medium)
                 }
                 .padding(.leading, 36)
                 .accessibilityIdentifier("telegramDeveloperLink")
@@ -284,10 +286,10 @@ struct TelegramSignInView: View {
 
     private func instruction(_ number: Int, _ text: String) -> some View {
         HStack(alignment: .top, spacing: 12) {
-            Text("\(number)").font(.system(size: 12, weight: .semibold, design: .monospaced))
-                .frame(width: 24, height: 24).background(WorkspaceTheme.surface, in: Circle())
+            Text("\(number)").scaledFont(12, weight: .semibold, design: .monospaced)
+                .frame(width: badge, height: badge).background(WorkspaceTheme.surface, in: Circle())
                 .foregroundStyle(WorkspaceTheme.mint)
-            Text(text).font(.system(size: 14)).foregroundStyle(WorkspaceTheme.secondary)
+            Text(text).scaledFont(14).foregroundStyle(WorkspaceTheme.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .accessibilityElement(children: .combine)
