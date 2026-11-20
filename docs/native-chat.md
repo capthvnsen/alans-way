@@ -65,6 +65,26 @@ runs **Test**. The address defaults to `http://127.0.0.1:8642` when none is set.
   card. A fenced block tagged `html widget` runs in a sandboxed frame with no
   network access.
 
+## Streaming connection (WebSocket) or plain requests (SSE)
+
+By default a reply streams over a WebSocket to the Hermes backend (`hermes serve`, `/api/ws`).
+That is also the only connection that reports context size and can compact. It is a
+different door from the API server above: it needs the backend address and sign-in saved
+under Settings, Chat surface, Hermes conversations, and an address on your tailnet
+(`https://….ts.net` or a Tailscale IP). Nothing else changes: lists, history and forks
+still use the API server and its key.
+
+If that connection has not come up once since the app started (an older Hermes without
+`/api/ws`, no backend address saved, signed out, an address the app refuses), messages
+go over the API server with plain streaming instead, with no banner and no error.
+The first attempt after launch is waited for (up to 8 seconds). If the connection
+comes up later, the next message uses it. Once it has worked, a drop is treated as a
+network drop: messages wait, with the "Reconnecting" note, and go when it is back.
+
+The `nativeTransport` preference overrides this: `sse` always uses plain requests,
+`websocket` always uses the connection and waits for it (no fallback). It has no
+Settings control; edit `preferences.json` and restart.
+
 ## Compacting before a send
 
 Over the WebSocket gateway, Hermes reports how full a conversation's context is
@@ -72,7 +92,8 @@ Over the WebSocket gateway, Hermes reports how full a conversation's context is
 chat asks Hermes to compact the conversation first (`session.compress`) when either:
 
 - the context is at least 75% of the model's window; or
-- the last turn ended more than 5 minutes ago (the prompt-cache lifetime) and the
+- the last turn ended longer ago than the prompt-cache lifetime (5 minutes, or 1 hour
+  when set so, see below) and the
   context is at least 40,000 tokens or 25% of the window, whichever is smaller. Once
   the cache has expired the next send pays full price for the whole context anyway,
   so a summary now makes that turn and every later one cheaper.
@@ -80,7 +101,11 @@ chat asks Hermes to compact the conversation first (`session.compress`) when eit
 A note above the message box says so ("Will compact before sending · chat idle 12 min")
 with a switch to turn it off for that message only. The numbers live in
 `desktop/src/compact-policy.cjs`. **Settings › Chat surface › Compact long or idle chats
-before sending** turns the whole thing off. If the compaction fails or takes longer than
+before sending** turns the whole thing off. **Treat a chat as idle after** says how long
+Hermes keeps its prompt cache: 5 minutes (Hermes's default) or 1 hour. Hermes does not
+report it, so pick 1 hour if your Hermes config sets `prompt_caching.cache_ttl` to `"1h"`
+(or `"auto"`, which gives chats you type into 1 hour); otherwise a chat is compacted
+while Hermes still has it cached. If the compaction fails or takes longer than
 two minutes, the message is sent as it is; Stop during a compaction cancels the send and
 leaves the message as "Not sent". Nothing compacts when the context size is unknown,
 which is also the case on the REST path and for a conversation Hermes has not run yet.

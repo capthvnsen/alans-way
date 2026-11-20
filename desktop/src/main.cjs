@@ -530,6 +530,8 @@ function settingsWriteReceipt(entry) {
   }
   return { settingsWrite: { status, detail: record?.detail || '' }, state: getState() };
 }
+// Hermes keeps the prompt cache 5 minutes, or 1 hour when its config says so; the gateway does not report which.
+const promptCacheTtl = () => prefs.promptCacheTtl === '1h' ? '1h' : '5m';
 function getState() {
   const state = { name: app.getName(), version: app.getVersion(), releaseChannel: prefs.releaseChannel, activeReleaseChannel, build: BUILD, buildBadge: describeBuild(BUILD), bots: avatarStore.publicBots().map(bot => ({ ...bot, activity: activity.get(bot.id), hue: botAccent(bot.id).hue })), order: prefs.order, hidden: prefs.hidden,
     selectedBotId: prefs.selectedBotId, settingsFieldRevisions: { ...settingsFieldRevisions }, chatWidth: prefs.chatWidth, showBots: prefs.showBots, showBrowser: prefs.showBrowser, savedRemoteUrl: prefs.remoteUrl, remoteUrl: (() => { try { parseRemoteUrl(prefs.remoteUrl); return prefs.remoteUrl; } catch { return ''; } })(),
@@ -547,7 +549,7 @@ function getState() {
     onboarding: shouldOnboard(prefs), inApplications: process.platform === 'darwin' && app.isPackaged ? setupCheck.inRouterApplications(process.execPath) : null,
     primaryBotId: prefs.primaryBotId || (prefs.overseerBots || [])[0] || '', primaryBotPref: prefs.primaryBotId || '', overseerBots: prefs.overseerBots || [],
     botSort: prefs.botSort || 'manual',
-    autoOpenLinks: prefs.autoOpenLinks !== false, autoTakeover: prefs.autoTakeover !== false, carrySignIns: prefs.carrySignIns !== false, compactBeforeSend: prefs.compactBeforeSend !== false,
+    autoOpenLinks: prefs.autoOpenLinks !== false, autoTakeover: prefs.autoTakeover !== false, carrySignIns: prefs.carrySignIns !== false, compactBeforeSend: prefs.compactBeforeSend !== false, promptCacheTtl: promptCacheTtl(),
     // activeTabId keeps its wire meaning for the renderer: the surface on screen, 'vps' for Bot screen.
     canvasTab: shownCanvas(), canvasStrip: canvasStripTabs(shownCanvas(), webappCanvas()), webappCanvas: webappCanvas(), terminals: terminals.ids(), terminalNote, activeTabId: shownCanvas() === 'screen' ? 'vps' : shownTabId(), activeVpsTabId, browserTabHost: shownCanvas() === 'screen' && vpsTabs.has(activeVpsTabId) ? 'vps' : HOST_LABEL, browserContentsId: (() => { const contents = tabs.get(shownTabId())?.view?.webContents; return contents && !contents.isDestroyed() ? contents.id : null; })(), browserTabId: shownCanvas() === 'screen' && vpsTabs.has(activeVpsTabId) ? activeVpsTabId : activeTabId, avatarLibrary: avatarStore.publicLibrary(), avatarPreferences: prefs.avatarPreferences,
     locationDefault: prefs.locationDefault, sitePermissions: prefs.sitePermissions, extensions: extensionStore?.list() || [], downloads: downloadStore.list(),
@@ -2358,6 +2360,7 @@ function registerIpc() {
         if (typeof value.autoTakeover === 'boolean') next.autoTakeover = value.autoTakeover;
         if (typeof value.carrySignIns === 'boolean') next.carrySignIns = value.carrySignIns;
         if (typeof value.compactBeforeSend === 'boolean') next.compactBeforeSend = value.compactBeforeSend;
+        if (['5m', '1h'].includes(value.promptCacheTtl)) next.promptCacheTtl = value.promptCacheTtl;
         if (typeof value.primaryBotId === 'string') next.primaryBotId = next.bots.some((bot) => bot.id === value.primaryBotId) || value.primaryBotId === '' ? value.primaryBotId : next.primaryBotId;
         if (['ask', 'block', 'approximate'].includes(value.locationDefault)) next.locationDefault = value.locationDefault;
         if (value.chatSurface === 'native' && !nativeChat.configured) throw new Error('Save the native chat address and API key first.');
@@ -2384,7 +2387,7 @@ function registerIpc() {
         persistSettingsPreferences(next);
         if (addressChanged) { webappSignIn.forget(); webappSignInError = ''; webappSignInTried = false; checkWebapp().catch(error => logError('hermes-webapp', error)); }
         if (nativeConfig) nativeChat.configure(nativeConfig);
-        if (Object.hasOwn(value, 'compactBeforeSend')) pushNativeState();
+        if (Object.hasOwn(value, 'compactBeforeSend') || Object.hasOwn(value, 'promptCacheTtl')) pushNativeState();
         if (Object.hasOwn(value, 'chatSurface') || nativeConfig || (addressChanged && !next.hermesWebappUrl)) applySurface();
         if (Object.hasOwn(value, 'releaseChannel')) {
           holdAppInstall(false);
@@ -4027,9 +4030,8 @@ else {
     // Loads the last-open conversation from disk before the window exists, so it paints with no network.
     nativeChat = createNativeChat({
       dir: app.getPath('userData'), loadConfig: loadNativePersisted, saveConfig: saveNativePersisted,
-      // shortcut: WebSocket is opt-in until it has run against a real Hermes backend; make it the default after the VM baseline.
-      apiFactory: createGatewayApiFactory({ restFactory: createHermesApi, link: gatewayLink, transport: () => prefs.nativeTransport === 'websocket' ? 'websocket' : 'sse' }),
-      openLink: (url) => openTelegramLink(url), copyText: (text) => clipboard.writeText(text), visible: () => chatTarget === 'native', compactEnabled: () => prefs.compactBeforeSend !== false,
+      apiFactory: createGatewayApiFactory({ restFactory: createHermesApi, link: gatewayLink, transport: () => ['websocket', 'sse'].includes(prefs.nativeTransport) ? prefs.nativeTransport : '' }),
+      openLink: (url) => openTelegramLink(url), copyText: (text) => clipboard.writeText(text), visible: () => chatTarget === 'native', compactEnabled: () => prefs.compactBeforeSend !== false, cacheTtlMs: () => promptCacheTtl() === '1h' ? 60 * 60 * 1000 : 5 * 60 * 1000,
       notify: () => {
         pushNativeState();
         const native = nativeInbox(), summary = JSON.stringify([nativeChat.summary(), nativeChat.activeId, native]);

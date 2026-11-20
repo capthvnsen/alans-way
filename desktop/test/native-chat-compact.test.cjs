@@ -7,39 +7,17 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { PassThrough } = require('node:stream');
-const { HermesSessionWire } = require('../src/hermes-session-wire.cjs');
 const { createGatewayLink } = require('../src/gateway-link.cjs');
 const { createGatewayApi } = require('../src/gateway-api.cjs');
 const { createNativeChat } = require('../src/native-chat.cjs');
 const { shouldCompact } = require('../src/compact-policy.cjs');
-const { createGatewayEngine } = require('./hermes-gateway-engine.cjs');
+const { createGatewayEngine, memConn } = require('./hermes-gateway-engine.cjs');
 
 const SID = 'api_1', MIN = 60 * 1000;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function until(pred, what, ms = 5000) {
   const end = Date.now() + ms;
   while (!pred()) { if (Date.now() > end) throw new Error(`timed out waiting for ${what}`); await sleep(2); }
-}
-
-function memConn(engine) {
-  const input = new PassThrough(), output = new PassThrough();
-  input.on('error', () => {});
-  const wire = new HermesSessionWire({ input, output });
-  const peer = engine.connect((o) => { if (!input.destroyed) input.write(JSON.stringify(o) + '\n'); });
-  const conn = { wire, input, epoch: engine.epoch(), close: () => engine.disconnect(peer), reset: () => { engine.disconnect(peer); input.destroy(new Error('reset')); } };
-  let rest = '';
-  output.on('data', (c) => {
-    rest += c.toString('utf8');
-    let i;
-    while ((i = rest.indexOf('\n')) >= 0) {
-      const f = JSON.parse(rest.slice(0, i)); rest = rest.slice(i + 1);
-      if (f.id === undefined) continue;
-      Promise.resolve(engine.handle(peer, f)).then((r) => { if (r !== undefined && !input.destroyed) input.write(JSON.stringify({ jsonrpc: '2.0', id: f.id, ...r }) + '\n'); });
-    }
-  });
-  setImmediate(() => input.write(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: { replay_epoch: engine.epoch() } } }) + '\n'));
-  return conn;
 }
 
 const cleanup = [];
@@ -235,3 +213,20 @@ test('a kept context size is dropped when a newer reply exists, and a number fro
   const live = await rig({ dir: fresh, context: { used: 50000, max: 200000 } });
   await until(() => live.chat.getState().compact?.usedTokens === 50000, 'the number from Hermes');
 });
+
+// The prompt cache lives 5 minutes, or 1 hour on a Hermes configured so; the Settings choice decides which one "idle" means.
+for (const [name, ttlMs, compresses] of [['5 minutes', 5 * MIN, 1], ['1 hour', 60 * MIN, 0]]) {
+  test(`idle for 30 minutes with the cache lifetime at ${name}: ${compresses ? 'compacts' : 'does not compact'}`, async () => {
+    const r = await rig({ context: { used: 60000, max: 200000 }, chat: { cacheTtlMs: () => ttlMs } });
+    await until(() => r.chat.getState().compact, 'usage');
+    await r.chat.command('send', { sessionId: SID, text: 'first' });
+    await until(() => r.engine.submits.length === 1 && r.idle(), 'the first message');
+    r.clock.ms += 30 * MIN;
+    const c = r.chat.getState().compact;
+    assert.equal(c.cacheTtlMs, ttlMs, 'the chip reads the same lifetime');
+    assert.equal(shouldCompact({ ...c, idleMs: r.clock.ms - c.idleSince }), compresses ? 'stale' : null);
+    await r.chat.command('send', { sessionId: SID, text: 'second' });
+    await until(() => r.engine.submits.length === 2 && r.idle(), 'the second message');
+    assert.equal(r.engine.compresses.length, compresses);
+  });
+}

@@ -1,4 +1,6 @@
 'use strict';
+const { PassThrough } = require('node:stream');
+const { HermesSessionWire } = require('../src/hermes-session-wire.cjs');
 // In-memory model of the Hermes conversation gateway that tests share, whatever
 // carries the frames (a real WebSocket in hermes-auth-fake-backend.cjs, plain
 // streams in gateway-link.test.cjs). It models the parts the link depends on
@@ -231,4 +233,25 @@ function createGatewayEngine(cfg = {}) {
   };
 }
 
-module.exports = { createGatewayEngine };
+// A link `open()` result over plain streams: a real wire on one end, the engine on the other.
+function memConn(engine) {
+  const input = new PassThrough(), output = new PassThrough();
+  input.on('error', () => {});
+  const wire = new HermesSessionWire({ input, output });
+  const peer = engine.connect((o) => { if (!input.destroyed) input.write(JSON.stringify(o) + '\n'); });
+  const conn = { wire, input, epoch: engine.epoch(), close: () => engine.disconnect(peer), reset: () => { engine.disconnect(peer); input.destroy(new Error('reset')); } };
+  let rest = '';
+  output.on('data', (c) => {
+    rest += c.toString('utf8');
+    let i;
+    while ((i = rest.indexOf('\n')) >= 0) {
+      const f = JSON.parse(rest.slice(0, i)); rest = rest.slice(i + 1);
+      if (f.id === undefined) continue;
+      Promise.resolve(engine.handle(peer, f)).then((r) => { if (r !== undefined && !input.destroyed) input.write(JSON.stringify({ jsonrpc: '2.0', id: f.id, ...r }) + '\n'); });
+    }
+  });
+  setImmediate(() => input.write(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: { replay_epoch: engine.epoch() } } }) + '\n'));
+  return conn;
+}
+
+module.exports = { createGatewayEngine, memConn };

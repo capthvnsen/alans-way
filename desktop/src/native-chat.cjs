@@ -53,7 +53,7 @@ function mergeMessages(current, incoming, keepLocal = () => true) {
 const sameMessages = (a, b) => a.length === b.length && a.every((m, i) => m.id === b[i].id && m.text === b[i].text && m.state === b[i].state);
 
 function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {}, notify = () => {}, openLink = () => {}, copyText = () => {},
-  apiFactory = createHermesApi, now = Date.now, pollMs = 1000, retryMs = 5000, visible = () => true, compactEnabled = () => true, compactDeadlineMs = COMPACT_DEADLINE_MS, settleMs = QUEUE_SETTLE_MS }) {
+  apiFactory = createHermesApi, now = Date.now, pollMs = 1000, retryMs = 5000, visible = () => true, compactEnabled = () => true, cacheTtlMs = () => undefined, compactDeadlineMs = COMPACT_DEADLINE_MS, settleMs = QUEUE_SETTLE_MS }) {
   const cacheDir = path.join(dir, 'native-chat-cache'), queueDir = path.join(dir, 'native-chat-queue');
   const loaded = loadConfig() || {};
   const config = { baseUrl: str(loaded.baseUrl, 500), profile: str(loaded.profile, 64), key: str(loaded.key, 500) };
@@ -72,7 +72,7 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
     api = configured() ? apiFactory({ baseUrl: config.baseUrl, key: config.key, profile: config.profile }) : null; status = api ? 'idle' : 'unconfigured'; error = '';
     // A gateway-backed api reports its link: show it, warm the open thread when it comes up, reload a thread after a gap.
     if (api?.onLinkState) {
-      const offs = [api.onLinkState((s) => { if (s.state === 'live') { if (activeId) warm(activeId); drainAll(); } notify(); }),
+      const offs = [api.onLinkState((s) => { if (s.state === 'live' && activeId) warm(activeId); drainAll(); notify(); }),
         api.onGap?.(({ storedId }) => { if (!runs.has(storedId)) revalidate(storedId); }), api.onUsage?.(noteUsage)];
       offApi = () => offs.forEach((off) => off?.());
     }
@@ -463,11 +463,11 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
     const lastReply = (t.messages.findLast((m) => m.role === 'assistant')?.ts || 0) * 1000;
     // A number kept from an earlier launch is dropped once a reply newer than it shows up (another surface kept talking).
     if (t.ctx.restored && lastReply > t.ctx.at + STALE_CTX_MS) return null;
-    return { usedTokens: t.ctx.used, windowTokens: t.ctx.max, idleSince: Math.max(t.doneAt || 0, lastReply) };
+    return { usedTokens: t.ctx.used, windowTokens: t.ctx.max, idleSince: Math.max(t.doneAt || 0, lastReply), cacheTtlMs: cacheTtlMs() };
   }
   function compactReason(id) {
     const c = compactInputs(id);
-    return c && shouldCompact({ usedTokens: c.usedTokens, windowTokens: c.windowTokens, idleMs: c.idleSince ? now() - c.idleSince : NaN });
+    return c && shouldCompact({ usedTokens: c.usedTokens, windowTokens: c.windowTokens, idleMs: c.idleSince ? now() - c.idleSince : NaN, cacheTtlMs: c.cacheTtlMs });
   }
   function noteUsage(id, usage) {
     const used = Number(usage?.context_used), max = Number(usage?.context_max);
