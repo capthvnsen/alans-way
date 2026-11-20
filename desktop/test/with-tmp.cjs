@@ -11,6 +11,10 @@ const { spawn } = require('node:child_process');
 // dies with the app when a suite quits mid-check). The prefix below is short on
 // purpose: unix socket paths under the temp folder cap at 104 bytes.
 const ALLOWED = /^(workspace-|.*evidence|hw-tailnet-ssh-|node-compile-cache$|vm-update-check\.)/;
+// Chromium rewrites an Electron profile while it shuts down, after the last line of test code, so a profile folder that
+// comes back is swept without failing the run.
+const CHROMIUM = ['Crashpad', 'Local Storage', 'Network', 'GPUCache', 'Code Cache', 'Session Storage', 'Shared Dictionary'];
+const isProfile = dir => { try { return CHROMIUM.some(name => fs.existsSync(path.join(dir, name))); } catch { return false; } };
 function privateTmp() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ht-'));
   return {
@@ -18,7 +22,7 @@ function privateTmp() {
     env: { TMPDIR: dir, TMP: dir, TEMP: dir,
       NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --require ${path.join(__dirname, 'tmp-cleanup.cjs')}`.trim() },
     finish() {
-      const left = fs.readdirSync(dir).filter(name => !ALLOWED.test(name));
+      const left = fs.readdirSync(dir).filter(name => !ALLOWED.test(name) && !isProfile(path.join(dir, name)));
       fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
       if (left.length) { console.error(`TEMP LEAK: the tests left ${left.length} folder(s) behind: ${left.slice(0, 10).join(', ')}`); return false; }
       return true;
