@@ -131,6 +131,114 @@ final class TelegramModelMapperTests: XCTestCase {
         XCTAssertFalse(TelegramHistory.merge(page: [], into: short.messages).hasMore)
     }
 
+    func testWaitingOnTDLibNeverShowsTheCredentialForm() {
+        for waiting in [AuthorizationState.authorizationStateWaitTdlibParameters, .authorizationStateLoggingOut, .authorizationStateClosing] {
+            XCTAssertEqual(TelegramModelMapper.authState(waiting), .starting)
+        }
+        XCTAssertEqual(TelegramModelMapper.authState(.authorizationStateWaitPhoneNumber), .waitPhoneNumber)
+        XCTAssertEqual(TelegramModelMapper.authState(.authorizationStateReady), .ready)
+        XCTAssertEqual(TelegramModelMapper.authState(.authorizationStateClosed), .closed)
+        XCTAssertEqual(TelegramModelMapper.authState(.authorizationStateWaitOtherDeviceConfirmation(
+            AuthorizationStateWaitOtherDeviceConfirmation(link: "tg://login"))), .configuring)
+    }
+
+    @MainActor
+    func testANewStoreWaitsOnTDLibInsteadOfAskingForCredentials() {
+        XCTAssertEqual(TelegramStore().authState, .starting)
+        XCTAssertEqual(TelegramStore(authState: .configuring).authState, .configuring)
+    }
+
+    func testTelegramEntitiesBecomeStylesAndLinksWhileStrayAsterisksStayPlain() throws {
+        let text = "Compute 2*3*4 then bold www.example.com and docs"
+        let content = MessageContent.messageText(MessageText(linkPreview: nil, linkPreviewOptions: nil, text: FormattedText(
+            entities: [
+                TextEntity(length: 4, offset: 19, type: .textEntityTypeBold),
+                TextEntity(length: 15, offset: 24, type: .textEntityTypeUrl),
+                TextEntity(length: 4, offset: 44, type: .textEntityTypeTextUrl(TextEntityTypeTextUrl(url: "https://example.com/docs"))),
+                TextEntity(length: 3, offset: 0, type: .textEntityTypeBotCommand),
+            ], text: text)))
+
+        let entities = TelegramModelMapper.entities(content)
+        XCTAssertEqual(entities.map(\.kind), [.bold, .link(URL(string: "https://www.example.com")!), .link(URL(string: "https://example.com/docs")!)])
+
+        let styled = TelegramText.attributed(text, entities: entities)
+        XCTAssertEqual(String(styled.characters), text, "no characters are added, so 2*3*4 is not italicised")
+        let bold = try XCTUnwrap(styled.runs.first { $0.inlinePresentationIntent?.contains(.stronglyEmphasized) == true })
+        XCTAssertEqual(String(styled[bold.range].characters), "bold")
+        XCTAssertEqual(styled.runs.compactMap(\.link).map(\.absoluteString), ["https://www.example.com", "https://example.com/docs"])
+        XCTAssertNil(styled.runs.first { $0.inlinePresentationIntent?.contains(.emphasized) == true })
+    }
+
+    func testEntitiesOutsideTheTextAndUnsafeLinkSchemesAreIgnored() {
+        let styled = TelegramText.attributed("héllo 😀 world", entities: [
+            TelegramTextEntity(offset: 100, length: 5, kind: .bold),
+            TelegramTextEntity(offset: 6, length: 2, kind: .italic),
+        ])
+        XCTAssertEqual(styled.runs.filter { $0.inlinePresentationIntent != nil }.map { String(styled[$0.range].characters) }, ["😀"])
+        XCTAssertNil(TelegramModelMapper.linkURL("javascript:alert(1)"))
+        XCTAssertNil(TelegramModelMapper.linkURL("tg://resolve?domain=x"))
+        XCTAssertEqual(TelegramModelMapper.linkURL("example.com")?.absoluteString, "https://example.com")
+    }
+
+    func testRefreshAfterAnOfflineGapDropsOldCacheInsteadOfShowingAHole() async throws {
+        // Cache: 10, 20 (old) and 90 (pushed by updateChatLastMessage). Server: 30...90 in two pages of newest-first.
+        let cache = [text(id: 10), text(id: 20), text(id: 90)]
+        let server = [90, 80, 70, 60, 50, 40, 30].map { text(id: Int64($0)) }
+        var asked: [Int64] = []
+        let result = try await TelegramHistory.refreshNewest(current: cache, maxPages: 2) { from in
+            asked.append(from)
+            let older = server.filter { from == 0 || $0.id <= from }
+            return Array(older.prefix(4))
+        }
+        XCTAssertEqual(asked, [0, 60])
+        XCTAssertEqual(result.messages.map(\.id), [30, 40, 50, 60, 70, 80, 90])
+        XCTAssertTrue(result.gapped, "Older cached messages are dropped and Earlier messages is offered again.")
+    }
+
+    func testRefreshThatReachesTheCacheJustFillsTheGap() async throws {
+        let cache = [text(id: 10), text(id: 20), text(id: 90)]
+        let server = [90, 80, 70, 20, 10].map { text(id: Int64($0)) }
+        let result = try await TelegramHistory.refreshNewest(current: cache) { from in
+            Array(server.filter { from == 0 || $0.id <= from }.prefix(3))
+        }
+        XCTAssertEqual(result.messages.map(\.id), [10, 20, 70, 80, 90])
+        XCTAssertFalse(result.gapped)
+    }
+
+    func testRefreshThatReachesTheStartOfTheChatKeepsTheCache() async throws {
+        let cache = [text(id: 10), text(id: 90)]
+        let server = [90, 80, 10].map { text(id: Int64($0)) }
+        let result = try await TelegramHistory.refreshNewest(current: cache) { from in server.filter { from == 0 || $0.id <= from } }
+        XCTAssertEqual(result.messages.map(\.id), [10, 80, 90])
+        XCTAssertFalse(result.gapped)
+    }
+
+    func testRefreshWithNothingNewLeavesTheCacheAlone() async throws {
+        let cache = [text(id: 10), text(id: 20)]
+        let result = try await TelegramHistory.refreshNewest(current: cache) { _ in [] }
+        XCTAssertEqual(result.messages, cache)
+        XCTAssertFalse(result.gapped)
+    }
+
+    @MainActor
+    func testOverlappingChatLoadsShareOneRun() async throws {
+        let flight = SingleFlight()
+        var runs = 0
+        var release: CheckedContinuation<Void, Never>?
+        let first = Task { @MainActor in
+            try await flight.run { runs += 1; await withCheckedContinuation { release = $0 } }
+        }
+        while release == nil { await Task.yield() }
+        let second = Task { @MainActor in try await flight.run { runs += 1 } }
+        await Task.yield()
+        release?.resume()
+        try await first.value
+        try await second.value
+        XCTAssertEqual(runs, 1, "A second caller joins the run in flight instead of starting another.")
+        try await flight.run { runs += 1 }
+        XCTAssertEqual(runs, 2, "Once finished, the next call runs again.")
+    }
+
     private func text(id: Int64) -> TelegramMessage {
         TelegramMessage(id: id, chatID: 4, senderName: "Bot", isOutgoing: false, date: .distantPast, text: "\(id)")
     }

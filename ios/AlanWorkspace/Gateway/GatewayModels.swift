@@ -19,7 +19,57 @@ struct GatewayMessage: Identifiable, Equatable {
     var isStreaming = false
 }
 
+/// A request from Hermes that waits for the person: approve a command, or answer a clarifying question.
+/// Mirrors the desktop's approval and clarify cards (`native-chat.cjs`, `gateway-api.cjs`).
+struct GatewayPrompt: Identifiable, Equatable {
+    enum Kind: Equatable {
+        case approval(command: String, description: String, choices: [String])
+        case clarify(question: String, choices: [String])
+    }
+    static let approvalChoices = ["once", "session", "always", "deny"]
+    let id: String
+    let kind: Kind
+    /// The clarify question's id: Hermes expects the answer keyed by it.
+    let questionId: String?
+
+    init?(method: String, id: JSONValue, params: JSONValue) {
+        guard let key = Self.key(id) else { return nil }
+        self.id = key
+        func text(_ v: JSONValue?, _ limit: Int) -> String { String((v?.string ?? "").prefix(limit)) }
+        switch method {
+        case "approval":
+            let offered = (params["choices"]?.array ?? []).compactMap(\.string).filter(Self.approvalChoices.contains)
+            kind = .approval(command: text(params["command"], 4000), description: text(params["description"], 500),
+                             choices: offered.isEmpty ? Self.approvalChoices : offered)
+            questionId = nil
+        case "clarify":
+            let q = params["questions"]?.array?.first ?? .object([:])
+            let question = text(q["question"] ?? q["text"] ?? q["prompt"] ?? params["question"], 2000)
+            kind = .clarify(question: question.isEmpty ? "Alan has a question." : question,
+                            choices: (q["choices"]?.array ?? []).compactMap(\.string).prefix(8).map { String($0.prefix(200)) })
+            questionId = q["qid"]?.string
+        default: return nil
+        }
+    }
+
+    /// A JSON-RPC id as the string the app keys it by (the wire accepts strings and whole numbers).
+    static func key(_ id: JSONValue) -> String? { id.string ?? id.int.map(String.init) }
+
+    /// The `result` to send for this answer, or nil when it is not one this request allows.
+    func result(for answer: String) -> JSONValue? {
+        switch kind {
+        case .approval(_, _, let choices):
+            return choices.contains(answer) ? .object(["choice": .string(answer)]) : nil
+        case .clarify:
+            let clean = answer.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !clean.isEmpty else { return nil }
+            return .object(["answers": .object(questionId.map { [$0: .string(clean)] } ?? [:])])
+        }
+    }
+}
+
 struct GatewayThread: Equatable {
+    var prompts: [GatewayPrompt] = []
     var rows: [GatewayMessage] = []
     var isLoading = false
     var loadError: String?
