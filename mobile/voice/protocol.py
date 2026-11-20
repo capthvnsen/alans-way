@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
 import secrets
 import sqlite3
 import time
@@ -75,20 +76,34 @@ class LaunchTicketStore:
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         self._db().close()
 
+    # Databases whose schema this process already prepared, by file identity so
+    # a deleted and recreated file is prepared again. Every request opens its own
+    # connection, and the DDL below used to run on each one.
+    _prepared: set = set()
+
+    def _identity(self):
+        try:
+            info = os.stat(self.path)
+        except OSError:
+            return None
+        return (str(self.path), info.st_dev, info.st_ino)
+
     def _db(self):
         db = sqlite3.connect(self.path, timeout=10)
-        db.execute("PRAGMA journal_mode=WAL")
+        if self._identity() not in self._prepared:
+            db.execute("PRAGMA journal_mode=WAL")
+            db.execute("CREATE TABLE IF NOT EXISTS launch_tickets (ticket_hash TEXT PRIMARY KEY, binding TEXT NOT NULL, expires_at INTEGER NOT NULL, consumed_at INTEGER)")
+            db.execute("CREATE TABLE IF NOT EXISTS calls (call_id TEXT PRIMARY KEY, token_hash TEXT NOT NULL, binding TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, closed_at INTEGER)")
+            db.execute("CREATE TABLE IF NOT EXISTS turns (call_id TEXT NOT NULL, turn_id TEXT NOT NULL, session_key TEXT NOT NULL, marker TEXT NOT NULL, injected_text TEXT NOT NULL, transcript TEXT NOT NULL, reply_text TEXT NOT NULL DEFAULT '', audio BLOB, audio_mime TEXT, status TEXT NOT NULL, error TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, playback_interrupted INTEGER NOT NULL DEFAULT 0, transcript_delivery_claimed INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(call_id, turn_id), FOREIGN KEY(call_id) REFERENCES calls(call_id))")
+            for table, column in (("calls", "closed_at INTEGER"), ("turns", "playback_interrupted INTEGER NOT NULL DEFAULT 0"), ("turns", "transcript_delivery_claimed INTEGER NOT NULL DEFAULT 0")):
+                try:
+                    db.execute(f"ALTER TABLE {table} ADD COLUMN {column}")
+                except sqlite3.OperationalError as exc:
+                    if "duplicate column" not in str(exc).lower():
+                        raise
+            db.commit()
+            self._prepared.add(self._identity())
         db.execute("PRAGMA foreign_keys=ON")
-        db.execute("CREATE TABLE IF NOT EXISTS launch_tickets (ticket_hash TEXT PRIMARY KEY, binding TEXT NOT NULL, expires_at INTEGER NOT NULL, consumed_at INTEGER)")
-        db.execute("CREATE TABLE IF NOT EXISTS calls (call_id TEXT PRIMARY KEY, token_hash TEXT NOT NULL, binding TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, closed_at INTEGER)")
-        db.execute("CREATE TABLE IF NOT EXISTS turns (call_id TEXT NOT NULL, turn_id TEXT NOT NULL, session_key TEXT NOT NULL, marker TEXT NOT NULL, injected_text TEXT NOT NULL, transcript TEXT NOT NULL, reply_text TEXT NOT NULL DEFAULT '', audio BLOB, audio_mime TEXT, status TEXT NOT NULL, error TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, playback_interrupted INTEGER NOT NULL DEFAULT 0, transcript_delivery_claimed INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(call_id, turn_id), FOREIGN KEY(call_id) REFERENCES calls(call_id))")
-        for table, column in (("calls", "closed_at INTEGER"), ("turns", "playback_interrupted INTEGER NOT NULL DEFAULT 0"), ("turns", "transcript_delivery_claimed INTEGER NOT NULL DEFAULT 0")):
-            try:
-                db.execute(f"ALTER TABLE {table} ADD COLUMN {column}")
-            except sqlite3.OperationalError as exc:
-                if "duplicate column" not in str(exc).lower():
-                    raise
-        db.commit()
         return db
 
     @contextmanager

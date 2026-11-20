@@ -13,8 +13,11 @@ import types
 from unittest.mock import patch
 from pathlib import Path
 
-from aiohttp.test_utils import TestClient, TestServer
-from aiohttp import web
+try:
+    from aiohttp.test_utils import TestClient, TestServer
+    from aiohttp import web
+except ImportError:
+    raise unittest.SkipTest("aiohttp is not installed; run: pip install -r mobile/requirements.txt")
 
 from mobile.voice.protocol import LaunchBinding
 from mobile.voice.server import BrokerListener, HermesAudio, VoiceBroker
@@ -102,6 +105,61 @@ class VoiceHttpProtocolTests(unittest.IsolatedAsyncioTestCase):
                 "init_data": init_data("123:secret", auth_date=issued_at - 1000),
             })
             self.assertEqual(stale.status, 401)
+
+    async def test_unauthenticated_call_creation_refuses_oversized_and_malformed_bodies(self):
+        big = b'{"init_data":"' + b"a" * (200 * 1024) + b'"}'
+        refused = await self.client.post("/v1/calls", data=big, headers={"Content-Type": "application/json"})
+        self.assertEqual(refused.status, 413)
+
+        async def chunks():
+            for _ in range(64):
+                yield b"x" * 4096  # no Content-Length: the cap must still apply
+        streamed = await self.client.post("/v1/calls", data=chunks(), headers={"Content-Type": "application/json"})
+        self.assertEqual(streamed.status, 413)
+        for body in (b"not json", b"[]", b"\xff\xfe"):
+            with self.subTest(body=body):
+                bad = await self.client.post("/v1/calls", data=body, headers={"Content-Type": "application/json"})
+                self.assertEqual(bad.status, 400)
+        self.assertEqual((await self._create_call())["expires_in"], 3600)
+
+    async def _stalled_request(self, head, patch_name):
+        """Send headers and part of a body, then go quiet; return the status line the server answers with."""
+        from mobile.voice import server as server_module
+        with patch.object(server_module, patch_name, 0.3):
+            reader, writer = await asyncio.open_connection("127.0.0.1", self.client.server.port)
+            try:
+                writer.write(head)
+                await writer.drain()
+                return await asyncio.wait_for(reader.readline(), timeout=3)
+            finally:
+                writer.close()
+
+    async def test_a_client_that_stalls_mid_body_is_cut_off_on_the_unauthenticated_route(self):
+        status = await self._stalled_request(
+            b"POST /v1/calls HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 500\r\n\r\n{",
+            "BODY_READ_SECONDS")
+        self.assertIn(b"408", status)
+
+    async def test_a_client_that_stalls_mid_upload_is_cut_off_and_frees_the_call(self):
+        call = await self._create_call()
+        status = await self._stalled_request(
+            (f"POST /v1/calls/{call['call_id']}/turns HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {call['access_token']}\r\n"
+             "Content-Type: multipart/form-data; boundary=b\r\nContent-Length: 5000\r\n\r\n--b\r\n").encode(),
+            "UPLOAD_READ_SECONDS")
+        self.assertIn(b"408", status)
+
+    async def test_concurrent_capability_probes_make_one_upstream_request(self):
+        calls = []
+
+        async def slow(self_):
+            calls.append(1)
+            await asyncio.sleep(0.05)
+            return {"ready": True, "stt": {}, "tts": {}}
+        audio = HermesAudio("http://127.0.0.1:9", "token")
+        with patch.object(HermesAudio, "_fetch_capabilities", slow):
+            results = await asyncio.gather(*(audio.capabilities() for _ in range(20)))
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(all(result["ready"] for result in results))
 
     async def test_authenticated_upload_injects_once_and_returns_correlated_reply_audio(self):
         call = await self._create_call()
@@ -511,7 +569,7 @@ class PluginRuntimeTests(unittest.TestCase):
             ctx = Context()
             with patch.dict(sys.modules, {"agent.secret_scope": scope, "plugins.plugin_storage": storage}), patch.dict(
                 os.environ, {"TELEGRAM_BOT_TOKEN": "wrong-launch-profile", "HERMES_HOME": "/wrong-home"}
-            ), patch("mobile.voice.hermes_plugin.BrokerListener") as listener:
+            ), patch("mobile.voice.server.BrokerListener") as listener:
                 plugin = MobileVoicePlugin(ctx)
                 self.assertIsNone(plugin.broker)
                 listener.assert_not_called()
@@ -545,6 +603,57 @@ class PluginRuntimeTests(unittest.TestCase):
             replacement.stop()
             self.assertFalse(listener._thread.is_alive())
             self.assertFalse(replacement._thread.is_alive())
+
+
+class ListenerLifecycleTests(unittest.TestCase):
+    def broker(self, temp):
+        return VoiceBroker(bot_token="test", db_path=Path(temp) / "voice.db", audio=FakeAudio(),
+                           inject=lambda *_: True, app_url="https://voice.example.test/call")
+
+    @staticmethod
+    def free_port():
+        import socket
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            return probe.getsockname()[1]
+
+    def test_a_client_stalled_mid_request_cannot_keep_the_port_after_unload(self):
+        import socket
+        with tempfile.TemporaryDirectory() as temp:
+            port = self.free_port()
+            listener = BrokerListener(self.broker(temp), port=port)
+            listener.start()
+            stalled = socket.create_connection(("127.0.0.1", port))
+            try:
+                stalled.sendall(b"POST /v1/calls HTTP/1.1\r\nHost: x\r\nContent-Length: 500\r\n\r\n{")
+                time.sleep(0.3)
+                began = time.monotonic()
+                listener.stop()
+                self.assertLess(time.monotonic() - began, 6)
+                self.assertFalse(listener._thread.is_alive())
+                replacement = BrokerListener(self.broker(temp), port=port)
+                replacement.start()
+                replacement.stop()
+            finally:
+                stalled.close()
+
+    def test_a_port_already_in_use_says_so(self):
+        import socket
+        with tempfile.TemporaryDirectory() as temp, socket.socket() as taken:
+            taken.bind(("127.0.0.1", 0))
+            taken.listen()
+            port = taken.getsockname()[1]
+            listener = BrokerListener(self.broker(temp), port=port)
+            with self.assertRaises(RuntimeError) as caught:
+                listener.start()
+            self.assertIn(str(port), str(caught.exception))
+            self.assertFalse(listener._thread.is_alive())
+
+    def test_only_loopback_is_bound(self):
+        with tempfile.TemporaryDirectory() as temp:
+            for host in ("0.0.0.0", "::", "192.0.2.1", ""):
+                with self.subTest(host=host), self.assertRaises(ValueError):
+                    BrokerListener(self.broker(temp), host=host, port=self.free_port())
 
 
 class HermesAudioAdapterTests(unittest.IsolatedAsyncioTestCase):

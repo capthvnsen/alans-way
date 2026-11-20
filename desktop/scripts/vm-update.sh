@@ -959,9 +959,24 @@ hermes_fields() {
   HHOME="${HERMES_HOME:-$HOME/.hermes}"
   _hf_ver="" _hf_check="" _hf_gw=null _hf_plugin="" _hf_plugins=""
   if hermes_bin; then
-    _hf_ver="$(run_hermes 20 --version | sed -n '/Hermes Agent v/{p;q;}')"
-    _hf_check="$(run_hermes 45 update --check | grep -Ei 'available|up to date|no newer release' | head -3)"
-    _hf_gw_out="$(run_hermes 20 gateway status)"
+    # Three independent read-only calls, each a slow Python start (the update
+    # check also does a git fetch): run them together so the check costs the
+    # slowest, not the sum. The scratch dir is removed before this returns.
+    _hf_tmp="$(mktemp -d "${TMPDIR:-/tmp}/vm-update-check.XXXXXX")" || _hf_tmp=""
+    if [ -n "$_hf_tmp" ]; then
+      run_hermes 20 --version > "$_hf_tmp/ver" &
+      run_hermes 45 update --check > "$_hf_tmp/check" &
+      run_hermes 20 gateway status > "$_hf_tmp/gw" &
+      wait
+      _hf_ver="$(sed -n '/Hermes Agent v/{p;q;}' "$_hf_tmp/ver")"
+      _hf_check="$(grep -Ei 'available|up to date|no newer release' "$_hf_tmp/check" | head -3)"
+      _hf_gw_out="$(cat "$_hf_tmp/gw")"
+      rm -rf "$_hf_tmp"
+    else
+      _hf_ver="$(run_hermes 20 --version | sed -n '/Hermes Agent v/{p;q;}')"
+      _hf_check="$(run_hermes 45 update --check | grep -Ei 'available|up to date|no newer release' | head -3)"
+      _hf_gw_out="$(run_hermes 20 gateway status)"
+    fi
     if printf '%s' "$_hf_gw_out" | grep -qi 'gateway is running'; then _hf_gw=true
     elif printf '%s' "$_hf_gw_out" | grep -qi 'not running'; then _hf_gw=false; fi
   fi
@@ -1016,8 +1031,10 @@ say "updating $DIR to $TAG"
 # Never swap code under a live agent action. The broker reports busy while a
 # tab is mid-action; wait briefly, then leave this VM for a later retry.
 deadline=$(( $(date +%s) + BUSY_WAIT ))
+BROKER_WAS_UP=false
 while :; do
   BODY="$(status_body)" || BODY=""
+  [ -z "$BODY" ] || BROKER_WAS_UP=true
   case "$BODY" in
     *'"busy":true'*) ;;
     *) break;;
@@ -1073,6 +1090,83 @@ ANCESTRY="$(run_git_command $SUDO "$GIT" -C "$DIR" merge-base --is-ancestor HEAD
 [ "$ANCESTRY_RC" -ne 124 ] || fail "$ANCESTRY"
 [ "$ANCESTRY_RC" -eq 0 ] \
   || fail "checkout HEAD is not an ancestor of $TAG; refusing a rollback or divergent checkout. Review origin and local commits in $DIR"
+# Where the checkout was, so a failure after the switch can put it back: the
+# branch when HEAD is on one, else the commit.
+PREV_HEAD="$(run_git_command $SUDO "$GIT" -C "$DIR" rev-parse HEAD 2>/dev/null || true)"
+PREV_REF="$(run_git_command $SUDO "$GIT" -C "$DIR" symbolic-ref -q --short HEAD 2>/dev/null || true)"
+[ -n "$PREV_REF" ] || PREV_REF="$PREV_HEAD"
+PREV_VERSION="$VERSION"
+
+# Reinstall dependencies for whatever the checkout is on, inside the run budget:
+# an install that stalls must not use up the time the result line needs. The
+# first install leaves 55 s of the budget for a rollback (its npm cache is warm).
+npm_install() {
+  _ni_left=$(( $(budget_left) - 5 ))
+  _ni_secs="${ALANS_WAY_VM_NPM_TIMEOUT:-180}"
+  case "$_ni_secs" in ''|*[!0-9]*) _ni_secs=180;; esac
+  [ "$1" = first ] && _ni_left=$(( _ni_left - 55 ))
+  [ "$_ni_secs" -le "$_ni_left" ] || _ni_secs="$_ni_left"
+  [ "$_ni_secs" -gt 0 ] || return 124
+  ( cd "$DIR/desktop" && bounded "$_ni_secs" $SUDO env PATH="$PATH" "$NPM" ci --omit=dev --ignore-scripts >/dev/null 2>&1 )
+}
+
+# The service restart. Chromium is not restarted, so open tabs and sign-ins survive.
+restart_broker() {
+  RESTARTED=false
+  case "$GUEST_OS" in
+    Darwin)
+      if launchctl kickstart -k "gui/$(id -u)/com.alans-way.browser" 2>/dev/null; then
+        RESTARTED=true
+      else
+        say "could not restart the broker; run: launchctl kickstart -k gui/$(id -u)/com.alans-way.browser"
+      fi;;
+    *)
+      # A broker managed by supervisord restarts through supervisorctl; the
+      # program is found by its command line, not a hardcoded name. With no
+      # live systemd there is no working systemctl to fall back to, so the
+      # remediation names the command that can work on this host.
+      _prog="$(supervisor_program 'vps-browser-host.cjs')"
+      if [ -n "$_prog" ]; then
+        _sp_ctl restart "$_prog" >/dev/null 2>&1 && RESTARTED=true \
+          || say "could not restart the broker; run: supervisorctl restart $_prog (or: sudo supervisorctl restart $_prog)"
+      elif ! systemd_live; then
+        if have supervisorctl; then
+          say "could not restart the broker; find its program with: supervisorctl status"
+        else
+          say "could not restart the broker; restart the service that runs vps-browser-host.cjs serve"
+        fi
+      elif [ "$(id -u)" = 0 ]; then
+        systemctl restart hermes-alans-way-browser.service >/dev/null 2>&1 && RESTARTED=true \
+          || say "could not restart the broker; run: systemctl restart hermes-alans-way-browser.service"
+      else
+        systemctl --user restart hermes-alans-way-browser.service >/dev/null 2>&1 && RESTARTED=true \
+          || sudo -n systemctl restart hermes-alans-way-browser.service >/dev/null 2>&1 && RESTARTED=true \
+          || say "could not restart the broker; run: systemctl --user restart hermes-alans-way-browser.service (or: sudo systemctl restart hermes-alans-way-browser.service)"
+      fi;;
+  esac
+  [ "$RESTARTED" = true ] && say "browser host restarted" || say "broker restart is still owed (its file watch may restart it)"
+}
+
+# $1 = "restart" to also restart the broker on the old code. Puts the checkout
+# back on PREV_REF and reinstalls its dependencies, then sets ROLLBACK_NOTE to
+# the sentence appended to the failure, so every outcome is named.
+ROLLBACK_NOTE=""
+rollback() {
+  [ -n "$PREV_HEAD" ] || { ROLLBACK_NOTE=" Could not roll back automatically; review git status in $DIR."; return 0; }
+  say "rolling back to ${PREV_VERSION:-the previous checkout}"
+  if ! run_git_command $SUDO "$GIT" -C "$DIR" -c advice.detachedHead=false checkout -q "$PREV_REF" >/dev/null 2>&1 \
+      || [ "$(run_git_command $SUDO "$GIT" -C "$DIR" rev-parse HEAD 2>/dev/null)" != "$PREV_HEAD" ]; then
+    ROLLBACK_NOTE=" Could not roll back automatically; run: git -C $DIR checkout $PREV_REF"
+    return 0
+  fi
+  if ! npm_install rollback; then
+    ROLLBACK_NOTE=" The checkout is back on ${PREV_VERSION:-the previous version} but its dependencies could not be reinstalled; run npm ci in $DIR/desktop."
+    return 0
+  fi
+  [ "${1:-}" != restart ] || restart_broker
+  ROLLBACK_NOTE=" Rolled back to ${PREV_VERSION:-the previous version}."
+}
+
 CHECKOUT_ERROR="$(run_git_command $SUDO "$GIT" -C "$DIR" -c advice.detachedHead=false checkout -q "refs/tags/$TAG" 2>&1)" \
   || fail "could not check out $TAG: $(printf '%s' "$CHECKOUT_ERROR" | safe_git_error); review git status in $DIR"
 HEAD_NOW="$(run_git_command $SUDO "$GIT" -C "$DIR" rev-parse HEAD 2>&1)" \
@@ -1080,48 +1174,16 @@ HEAD_NOW="$(run_git_command $SUDO "$GIT" -C "$DIR" rev-parse HEAD 2>&1)" \
 [ "$HEAD_NOW" = "$WANT" ] || fail "checkout did not land on $TAG; refusing to run it"
 say "checkout pinned at $TAG"
 
-( cd "$DIR/desktop" && $SUDO env PATH="$PATH" "$NPM" ci --omit=dev --ignore-scripts >/dev/null 2>&1 ) \
-  || fail "npm ci failed in $DIR/desktop"
+npm_install first || { rollback; fail "npm ci failed in $DIR/desktop.$ROLLBACK_NOTE"; }
 say "dependencies installed"
 
 # Optional per-release migration hook, run from the NEW checkout.
 HOOK="$DIR/desktop/scripts/vm-post-update.sh"
 if [ -f "$HOOK" ]; then
-  $SUDO sh "$HOOK" "$TAG" || fail "the post-update hook failed"
+  $SUDO sh "$HOOK" "$TAG" || { rollback; fail "the post-update hook failed.$ROLLBACK_NOTE"; }
 fi
 
-case "$GUEST_OS" in
-  Darwin)
-    if launchctl kickstart -k "gui/$(id -u)/com.alans-way.browser" 2>/dev/null; then
-      RESTARTED=true
-    else
-      say "could not restart the broker; run: launchctl kickstart -k gui/$(id -u)/com.alans-way.browser"
-    fi;;
-  *)
-    # A broker managed by supervisord restarts through supervisorctl; the
-    # program is found by its command line, not a hardcoded name. With no
-    # live systemd there is no working systemctl to fall back to, so the
-    # remediation names the command that can work on this host.
-    _prog="$(supervisor_program 'vps-browser-host.cjs')"
-    if [ -n "$_prog" ]; then
-      _sp_ctl restart "$_prog" >/dev/null 2>&1 && RESTARTED=true \
-        || say "could not restart the broker; run: supervisorctl restart $_prog (or: sudo supervisorctl restart $_prog)"
-    elif ! systemd_live; then
-      if have supervisorctl; then
-        say "could not restart the broker; find its program with: supervisorctl status"
-      else
-        say "could not restart the broker; restart the service that runs vps-browser-host.cjs serve"
-      fi
-    elif [ "$(id -u)" = 0 ]; then
-      systemctl restart hermes-alans-way-browser.service >/dev/null 2>&1 && RESTARTED=true \
-        || say "could not restart the broker; run: systemctl restart hermes-alans-way-browser.service"
-    else
-      systemctl --user restart hermes-alans-way-browser.service >/dev/null 2>&1 && RESTARTED=true \
-        || sudo -n systemctl restart hermes-alans-way-browser.service >/dev/null 2>&1 && RESTARTED=true \
-        || say "could not restart the broker; run: systemctl --user restart hermes-alans-way-browser.service (or: sudo systemctl restart hermes-alans-way-browser.service)"
-    fi;;
-esac
-[ "$RESTARTED" = true ] && say "browser host restarted" || say "broker restart is still owed (its file watch may restart it)"
+restart_broker
 
 # The broker must answer loopback /v1/status with the tag's version before the
 # update is called done; a restart that never comes up is a failure.
@@ -1135,6 +1197,13 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
   sleep 2
 done
 if [ "$HEALTHY" != true ]; then
+  # A restart that landed on the wrong version, or took a running broker down,
+  # leaves the box worse than before; put the old code back and start it.
+  if [ "$RESTARTED" = true ] && { [ "$ASKED" = true ] || [ "$BROKER_WAS_UP" = true ]; }; then
+    rollback restart
+    if [ "$ASKED" = true ]; then fail "the browser host did not come back on $TAG.$ROLLBACK_NOTE"
+    else fail "the browser host stopped answering after the update.$ROLLBACK_NOTE"; fi
+  fi
   if [ "$ASKED" != true ]; then
     fail "updated but the broker status could not be read; verify $TAG on the VM and restart the broker with the command above"
   elif [ "$RESTARTED" = true ]; then

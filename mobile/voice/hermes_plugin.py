@@ -2,19 +2,47 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 import logging
 import os
+import threading
 from email.utils import parsedate_to_datetime
 import urllib.error
 import urllib.request
 from pathlib import Path
 
 from .protocol import LaunchBinding
-from .server import BrokerListener, HermesAudio, VoiceBroker
 
 log = logging.getLogger(__name__)
 PLUGIN_ID = "mobile-voice"
+
+
+class ClockSkewError(RuntimeError):
+    """The host clock and Telegram's differ too much to check a launch."""
+
+
+def _hermes_api(module: str, name: str):
+    """Resolve one Hermes-owned API lazily, so a Hermes that moved it fails with a reason."""
+    try:
+        return getattr(importlib.import_module(module), name)
+    except (ImportError, AttributeError) as exc:
+        raise RuntimeError(
+            f"{PLUGIN_ID} needs {module}.{name}, which this Hermes does not provide; update Hermes or this plugin"
+        ) from exc
+
+
+def _int_setting(ctx, name: str, default: int, low: int, high: int) -> int:
+    value = ctx.get_config(name, default=default)
+    try:
+        if isinstance(value, bool) or (isinstance(value, float) and not value.is_integer()):
+            raise ValueError
+        number = int(value)
+    except (TypeError, ValueError):
+        number = low - 1
+    if not low <= number <= high:
+        raise ValueError(f"{name} must be a whole number from {low} to {high}")
+    return number
 
 
 def _session_env(name: str, default: str = "") -> str:
@@ -37,7 +65,15 @@ def _telegram(method: str, token: str, payload: dict, timeout: float = 10, *, on
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             if on_server_time and response.headers.get("Date"):
-                on_server_time(parsedate_to_datetime(response.headers["Date"]).timestamp())
+                try:
+                    stamp = parsedate_to_datetime(response.headers["Date"]).timestamp()
+                except (TypeError, ValueError):
+                    stamp = None
+                if stamp is not None:
+                    try:
+                        on_server_time(stamp)
+                    except ValueError:
+                        raise ClockSkewError("host and Telegram clocks differ by more than five minutes") from None
             result = json.loads(response.read())
     except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
         raise RuntimeError(f"Telegram {method} request failed") from exc
@@ -49,13 +85,11 @@ def _telegram(method: str, token: str, payload: dict, timeout: float = 10, *, on
 def _secret(name: str) -> str:
     # Public, profile-scoped API: os.environ belongs to the launch profile in
     # a multiplex gateway. Never fall back after a scoped lookup fails.
-    from agent.secret_scope import get_secret
-    return str(get_secret(name) or "").strip()
+    return str(_hermes_api("agent.secret_scope", "get_secret")(name) or "").strip()
 
 
 def _plugin_home() -> Path:
-    from plugins.plugin_storage import plugin_data_dir
-    path = plugin_data_dir(PLUGIN_ID)
+    path = _hermes_api("plugins.plugin_storage", "plugin_data_dir")(PLUGIN_ID)
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
     try:
         path.chmod(0o700)
@@ -65,6 +99,11 @@ def _plugin_home() -> Path:
 
 
 class MobileVoicePlugin:
+    config_error = ""
+    # Shared by every instance: /call can arrive on more than one Hermes thread,
+    # and a second start() would find the first one's port taken and drop its broker.
+    _start_lock = threading.Lock()
+
     def __init__(self, ctx):
         self.ctx = ctx
         self.bot_token = ""
@@ -72,10 +111,17 @@ class MobileVoicePlugin:
         self.api_base = str(ctx.get_config("dashboard_api_base", default="http://127.0.0.1:9119")).strip().rstrip("/")
         self.api_key = ""
         self.profile = str(getattr(ctx, "profile_name", None) or os.environ.get("HERMES_PROFILE") or "default").strip()
-        self.db_path = _plugin_home() / "voice.sqlite3"
-        self.port = int(ctx.get_config("port", default=8765))
         self.miniapp_dir = ctx.get_config("miniapp_dir", default="")
-        self.turn_timeout = int(ctx.get_config("turn_timeout", default=180))
+        self.port, self.turn_timeout = 8765, 180
+        # A bad setting disables voice with a reason; it must not stop the rest of the plugin loading.
+        try:
+            self.port = _int_setting(ctx, "port", 8765, 1, 65535)
+            self.turn_timeout = _int_setting(ctx, "turn_timeout", 180, 1, 3600)
+            if self.app_url and not self.app_url.startswith("https://"):
+                raise ValueError("app_url must be an https:// URL")
+        except ValueError as exc:
+            self.config_error = str(exc)
+            log.warning("%s settings rejected, voice calls stay off: %s", PLUGIN_ID, exc)
         self.listener = None
         self.broker = None
         ctx.on_unload(self.close)
@@ -86,14 +132,28 @@ class MobileVoicePlugin:
         Dashboard/CLI plugin discovery must never reserve the gateway socket
         or capture credentials from an unscoped multiplex loader.
         """
+        with self._start_lock:
+            self._start()
+
+    def _start(self):
         if self.broker:
             return
+        if self.config_error:
+            raise RuntimeError(f"{PLUGIN_ID} settings are invalid: {self.config_error}")
         self.bot_token = _secret("TELEGRAM_BOT_TOKEN")
         self.api_key = _secret("HERMES_DASHBOARD_SESSION_TOKEN")
         if self.bot_token and self.app_url and self.api_key:
+            db_path = _plugin_home() / "voice.sqlite3"
+            try:
+                from .server import BrokerListener, HermesAudio, VoiceBroker
+            except ImportError as exc:
+                raise RuntimeError(
+                    f"{PLUGIN_ID} needs aiohttp>=3.9,<4 in Hermes' Python environment; "
+                    f"run `hermes plugins enable {PLUGIN_ID}` to install it"
+                ) from exc
             self.broker = VoiceBroker(
                 bot_token=self.bot_token,
-                db_path=self.db_path,
+                db_path=db_path,
                 audio=HermesAudio(self.api_base, self.api_key, profile=self.profile),
                 get_bot_id=lambda: str(_telegram("getMe", self.bot_token, {}).get("id") or ""),
                 send_transcript=lambda binding, transcript: bool(_telegram(
@@ -119,7 +179,7 @@ class MobileVoicePlugin:
             try:
                 self.listener.start()
             except Exception:
-                self.broker = None
+                self.broker = self.listener = None
                 raise
             log.info("Mobile voice broker listening on %s:%s", self.listener.host, self.listener.port)
 
@@ -146,6 +206,11 @@ class MobileVoicePlugin:
             return "This Telegram session has no verified private-chat binding."
         try:
             self.start()
+        except Exception as exc:
+            # These messages are written here and in server.py; none carries a credential.
+            log.warning("Could not start the mobile voice service: %s", exc)
+            return f"The voice service could not start: {exc}"
+        try:
             if not self.broker or not self.bot_token:
                 return "Voice calling is not configured for this Hermes profile."
             bot = await asyncio.to_thread(_telegram, "getMe", self.bot_token, {},
@@ -171,6 +236,9 @@ class MobileVoicePlugin:
                     "web_app": {"url": link},
                 }]]},
             })
+        except ClockSkewError:
+            log.warning("Could not post Telegram voice button: host clock differs from Telegram's")
+            return "This server's clock differs from Telegram's by more than five minutes. Turn on time sync on the server, then run /call again."
         except Exception as exc:
             log.warning("Could not post Telegram voice button: %s", type(exc).__name__)
             return "Could not prepare the call button. Check the mobile voice service configuration."
@@ -191,7 +259,10 @@ class MobileVoicePlugin:
 
 def register(ctx):
     from .openrouter_speech import register_speech_providers
-    register_speech_providers(ctx)
+    try:
+        register_speech_providers(ctx)
+    except RuntimeError as exc:
+        log.warning("OpenRouter speech providers were not registered; voice calls are unaffected: %s", exc)
     plugin = MobileVoicePlugin(ctx)
     ctx.register_command(
         "call", plugin.call_command,

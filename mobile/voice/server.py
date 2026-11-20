@@ -28,8 +28,15 @@ MAX_AUDIO_BYTES = 10 * 1024 * 1024
 TURN_ID_RE = re.compile(r"^[0-9a-fA-F-]{36}$")
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 MAX_TEXT_FIELD_BYTES = 256
+MAX_JSON_BODY_BYTES = 64 * 1024
+# A client that opens a request and stops sending must not hold its handler forever.
+BODY_READ_SECONDS = 10
+UPLOAD_READ_SECONDS = 60
 MAX_MULTIPART_PARTS = 8
 CAPABILITIES_CACHE_SECONDS = 45
+LISTENER_START_SECONDS = 10
+# A client stalled mid-request must not keep the port past plugin unload.
+LISTENER_STOP_GRACE_SECONDS = 2
 AUDIO_MIME_TYPES = {"audio/webm", "audio/mp4", "audio/ogg", "audio/wav"}
 SILENCE_TRANSCRIPTS = {"you", "you.", "thank you", "thank you.", "thanks for watching",
                        "thanks for watching.", "[blank_audio]", "(silence)"}
@@ -48,6 +55,7 @@ class HermesAudio:
             raise ValueError("dashboard_api_base must be https or a loopback http URL")
         self.base_url = base_url.rstrip("/")
         self._capabilities_cache: tuple[float, dict] | None = None
+        self._capabilities_lock = asyncio.Lock()
         self.session_token = session_token
         self.profile = profile
 
@@ -79,11 +87,14 @@ class HermesAudio:
     async def capabilities(self) -> dict:
         if not self.available:
             return {"ready": False, "reason": "Hermes audio API is not configured"}
-        if self._capabilities_cache and time.monotonic() - self._capabilities_cache[0] < CAPABILITIES_CACHE_SECONDS:
-            return self._capabilities_cache[1]
-        result = await self._fetch_capabilities()
-        self._capabilities_cache = (time.monotonic(), result)
-        return result
+        # One probe at a time: when the cache expires, callers wait for it
+        # instead of each sending their own request to the dashboard.
+        async with self._capabilities_lock:
+            if self._capabilities_cache and time.monotonic() - self._capabilities_cache[0] < CAPABILITIES_CACHE_SECONDS:
+                return self._capabilities_cache[1]
+            result = await self._fetch_capabilities()
+            self._capabilities_cache = (time.monotonic(), result)
+            return result
 
     async def _fetch_capabilities(self) -> dict:
         try:
@@ -210,9 +221,21 @@ class VoiceBroker:
                                  headers={"Cache-Control": "no-store"})
 
     async def create_call(self, request: web.Request) -> web.Response:
+        # Anyone who can reach the listener may call this; read only a launch-sized body.
+        if request.content_length is not None and request.content_length > MAX_JSON_BODY_BYTES:
+            raise web.HTTPRequestEntityTooLarge(max_size=MAX_JSON_BODY_BYTES, actual_size=request.content_length)
+        raw = b""
         try:
-            body = await request.json()
-        except (json.JSONDecodeError, ValueError):
+            async with asyncio.timeout(BODY_READ_SECONDS):
+                while chunk := await request.content.read(8192):
+                    raw += chunk
+                    if len(raw) > MAX_JSON_BODY_BYTES:
+                        raise web.HTTPRequestEntityTooLarge(max_size=MAX_JSON_BODY_BYTES, actual_size=len(raw))
+        except TimeoutError:
+            raise web.HTTPRequestTimeout(text="Request body was not received in time") from None
+        try:
+            body = json.loads(raw)
+        except ValueError:
             raise web.HTTPBadRequest(text="Expected JSON")
         if not isinstance(body, dict):
             raise web.HTTPBadRequest(text="Expected JSON object")
@@ -269,23 +292,27 @@ class VoiceBroker:
                     raise web.HTTPRequestEntityTooLarge(max_size=MAX_TEXT_FIELD_BYTES, actual_size=len(data))
             return data.decode("utf-8", "replace").strip()
 
-        while part := await reader.next():
-            parts += 1
-            if parts > MAX_MULTIPART_PARTS:
-                raise web.HTTPBadRequest(text="Too many form parts")
-            if part.name == "turn_id":
-                turn_id = await small_text(part)
-            elif part.name in ("mime_type", "content_type"):
-                mime = (await small_text(part)).split(";", 1)[0] or mime
-            elif part.name == "audio":
-                mime = (part.headers.get("Content-Type") or mime).split(";", 1)[0]
-                chunks = []
-                while chunk := await part.read_chunk(64 * 1024):
-                    total += len(chunk)
-                    if total > MAX_AUDIO_BYTES:
-                        raise web.HTTPRequestEntityTooLarge(max_size=MAX_AUDIO_BYTES, actual_size=total)
-                    chunks.append(chunk)
-                audio = b"".join(chunks)
+        try:
+            async with asyncio.timeout(UPLOAD_READ_SECONDS):
+                while part := await reader.next():
+                    parts += 1
+                    if parts > MAX_MULTIPART_PARTS:
+                        raise web.HTTPBadRequest(text="Too many form parts")
+                    if part.name == "turn_id":
+                        turn_id = await small_text(part)
+                    elif part.name in ("mime_type", "content_type"):
+                        mime = (await small_text(part)).split(";", 1)[0] or mime
+                    elif part.name == "audio":
+                        mime = (part.headers.get("Content-Type") or mime).split(";", 1)[0]
+                        chunks = []
+                        while chunk := await part.read_chunk(64 * 1024):
+                            total += len(chunk)
+                            if total > MAX_AUDIO_BYTES:
+                                raise web.HTTPRequestEntityTooLarge(max_size=MAX_AUDIO_BYTES, actual_size=total)
+                            chunks.append(chunk)
+                        audio = b"".join(chunks)
+        except TimeoutError:
+            raise web.HTTPRequestTimeout(text="Upload was not received in time") from None
         if not TURN_ID_RE.fullmatch(turn_id):
             raise web.HTTPBadRequest(text="turn_id must be a UUID")
         if not audio or mime.strip().lower() not in AUDIO_MIME_TYPES:
@@ -464,6 +491,8 @@ class BrokerListener:
     """Run aiohttp on loopback in a daemon thread owned by the gateway plugin."""
 
     def __init__(self, broker: VoiceBroker, host: str = "127.0.0.1", port: int = 8765, *, miniapp_dir: Path | None = None):
+        if host not in LOOPBACK_HOSTS:
+            raise ValueError("the voice broker only listens on loopback; put an HTTPS proxy in front of it")
         self.broker, self.host, self.port = broker, host, int(port)
         self.miniapp_dir = miniapp_dir
         self._ready = threading.Event()
@@ -475,10 +504,12 @@ class BrokerListener:
 
     def start(self) -> None:
         self._thread.start()
-        if not self._ready.wait(10):
-            raise RuntimeError("Voice broker listener did not start")
+        if not self._ready.wait(LISTENER_START_SECONDS):
+            self.stop()
+            raise RuntimeError(f"Voice broker did not start listening on {self.host}:{self.port} in time")
         if self._error:
-            raise RuntimeError("Voice broker listener failed") from self._error
+            self._thread.join(timeout=LISTENER_STOP_GRACE_SECONDS)
+            raise RuntimeError(f"Voice broker could not listen on {self.host}:{self.port}: {self._error}") from self._error
 
     def _run(self) -> None:
         async def serve():
@@ -492,7 +523,10 @@ class BrokerListener:
                 self._ready.set()
                 await self._shutdown.wait()
             finally:
-                await self._runner.cleanup()
+                try:
+                    await asyncio.wait_for(self._runner.cleanup(), LISTENER_STOP_GRACE_SECONDS)
+                except asyncio.TimeoutError:
+                    log.warning("Voice broker dropped connections still open after %ss", LISTENER_STOP_GRACE_SECONDS)
 
         try:
             asyncio.run(serve())
@@ -503,4 +537,4 @@ class BrokerListener:
     def stop(self):
         if self._loop and self._shutdown and self._loop.is_running():
             self._loop.call_soon_threadsafe(self._shutdown.set)
-            self._thread.join(timeout=10)
+            self._thread.join(timeout=LISTENER_STOP_GRACE_SECONDS + 5)
