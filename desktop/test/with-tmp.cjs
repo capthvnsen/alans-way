@@ -40,7 +40,7 @@ function privateTmp({ strict = true } = {}) {
 module.exports = { privateTmp };
 
 if (require.main === module) {
-  const tmp = privateTmp();
+  const tmp = privateTmp({ strict: path.basename(process.argv[2]) !== 'electron' });
   const child = spawn(process.argv[2], process.argv.slice(3), { stdio: 'inherit', env: { ...process.env, ...tmp.env } });
   for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => child.kill(signal));
   child.once('error', error => { console.error(error); process.exitCode = 1; });
