@@ -8,7 +8,7 @@ test('ordinary action searches match complete words in any order across each act
   assert.deepEqual(find('new tab'), ['new-tab']);
   assert.deepEqual(find('close tab'), ['close-tab', 'tab-close']);
   assert.deepEqual(find('focus address'), ['address']);
-  assert.deepEqual(find('switch tabs'), ['tab-move']);
+  assert.deepEqual(find('switch tabs'), ['tab-move', 'move-canvas-tabs']);
   assert.deepEqual(find('tab new'), ['new-tab']);
 });
 test('modifier names, separators and adjacent key glyphs describe the same chord', () => {
@@ -22,14 +22,14 @@ test('modifier names, separators and adjacent key glyphs describe the same chord
 test('DOM arrow names, spoken directions and glyphs have equivalent matches', () => {
   for (const query of ['ArrowDown', 'down arrow', 'arrow down', '↓']) assert.deepEqual(find(query), ['agent-move', 'search-result'], query);
   for (const query of ['shift tab', 'Shift+Tab', '⇧⇥']) assert.deepEqual(find(query), ['dialog-tab'], query);
-  assert.deepEqual(find('ArrowRight'), ['tab-move']);
+  assert.deepEqual(find('ArrowRight'), ['tab-move', 'move-canvas-tabs']);
   assert.deepEqual(find('return to opener'), ['dialog-close']);
 });
 test('shared scope notes and word substrings do not invent matches', () => {
   assert.deepEqual(find('comma'), ['settings']);
   assert.deepEqual(find('settings'), ['settings']);
   for (const query of ['com', 'command+q', 'command+shift+t', 'nonesuch-zqv']) assert.deepEqual(find(query), [], query);
-  assert.equal(find('').length, 19);
+  assert.equal(find('').length, 23);
 });
 
 test('modifier glyphs and names retain platform meaning instead of falling out of a query', () => {
@@ -56,7 +56,9 @@ test('a chord is one complete displayed binding, never a union with prose or ano
         assert.deepEqual(find(`${modifier}${separator}${key}`, platform), [], `${platform}: ${modifier}${separator}${key}`);
     for (const query of ['Shift+Tab', 'tab shift', '⇧⇥', 'Shift ⇥'])
       assert.deepEqual(find(query, platform), ['dialog-tab'], query);
-    for (const query of ['Shift+Enter', '⇧↩', 'Shift+Home', 'Home+End', '↑+↓', 'Tab+Enter', 'command new tab', 'command+t+tab'])
+    for (const query of ['Shift+Enter', '⇧↩'])
+      assert.deepEqual(find(query, platform), ['native-newline'], query);
+    for (const query of ['Shift+Home', 'Home+End', '↑+↓', 'Tab+Enter', 'command new tab', 'command+t+tab'])
       assert.deepEqual(find(query, platform), [], query);
   }
   const split = { title: 'Example Home tab', description: 'Control T', keys: [['⌘', 'T'], ['⇧', '⇥']] };
@@ -90,18 +92,18 @@ test('key spellings search actual keys and useful action wording retains whole-w
   for (const query of ['close browser tab', 'browser tab close']) assert.deepEqual(find(query), ['close-tab', 'tab-close'], query);
   for (const query of ['pdf open', 'open file', 'tab new', 'address focus'])
     assert.deepEqual(find(query), query.includes('pdf') || query.includes('file') ? ['open-file'] : query.includes('new') ? ['new-tab'] : ['address'], query);
-  for (const query of ['Esc', 'Escape', '⎋']) assert.deepEqual(find(query), ['search-close', 'dialog-close'], query);
+  for (const query of ['Esc', 'Escape', '⎋']) assert.deepEqual(find(query), ['native-menu-close', 'search-close', 'dialog-close'], query);
   for (const query of ['Delete', 'Del', '⌦', 'forward delete']) assert.deepEqual(find(query), ['tab-close'], query);
   for (const query of ['Space', 'Spacebar', '␣']) assert.deepEqual(find(query), ['agent-open'], query);
   for (const query of ['ArrowUp', 'up arrow', '↑']) assert.deepEqual(find(query), ['agent-move'], query);
-  for (const query of ['ArrowLeft', 'left arrow', '←', 'ArrowRight', 'right arrow', '→']) assert.deepEqual(find(query), ['tab-move'], query);
+  for (const query of ['ArrowLeft', 'left arrow', '←', 'ArrowRight', 'right arrow', '→']) assert.deepEqual(find(query), ['tab-move', 'move-canvas-tabs'], query);
   for (const query of ['com', 'wrongtab', 'agentlist', 'reopen tab', 'command+q']) assert.deepEqual(find(query), [], query);
 });
 
 test('nonempty punctuation and unknown symbols never become an empty all-actions query', () => {
   for (const query of ['!!', '???', '+', '---', '/', '⌥', '⌃', '^', '🌐', '⌫', '⌥!!', 'T🌐', 'Command+T!', '⌘T⌫', '⌘+'])
     assert.deepEqual(find(query), [], query);
-  for (const query of ['', ' ', '\t\n']) assert.equal(find(query).length, 19, JSON.stringify(query));
+  for (const query of ['', ' ', '\t\n']) assert.equal(find(query).length, 23, JSON.stringify(query));
 });
 
 test('an unmodified key glyph searches displayed bindings rather than prose', () => {
@@ -109,20 +111,20 @@ test('an unmodified key glyph searches displayed bindings rather than prose', ()
     for (const query of ['⇥', ' ⇥ ', '⇥ key'])
       assert.deepEqual(find(query, platform), ['agent-hide', 'dialog-tab'], `${platform}: ${query}`);
     for (const query of ['↩', '↵', '↩ key'])
-      assert.deepEqual(find(query, platform), ['agent-open'], `${platform}: ${query}`);
+      assert.deepEqual(find(query, platform), ['agent-open', 'native-send'], `${platform}: ${query}`);
   }
 });
 
 test('key names and key wording retain single-binding intent across platform aliases', () => {
   const cases = [
-    [['Home', 'End'], ['agent-move', 'tab-move']],
-    [['Enter', 'Return'], ['agent-open']],
+    [['Home', 'End'], ['agent-move', 'tab-move', 'move-canvas-tabs']],
+    [['Enter', 'Return'], ['agent-open', 'native-send']],
     [['Space', 'Spacebar'], ['agent-open']],
     [['Delete', 'Del', 'forward delete'], ['tab-close']],
-    [['Escape', 'Esc'], ['search-close', 'dialog-close']],
+    [['Escape', 'Esc'], ['native-menu-close', 'search-close', 'dialog-close']],
     [['ArrowUp', 'up arrow', 'arrow up'], ['agent-move']],
     [['ArrowDown', 'down arrow', 'arrow down'], ['agent-move', 'search-result']],
-    [['ArrowLeft', 'left arrow', 'arrow left', 'ArrowRight', 'right arrow', 'arrow right'], ['tab-move']],
+    [['ArrowLeft', 'left arrow', 'arrow left', 'ArrowRight', 'right arrow', 'arrow right'], ['tab-move', 'move-canvas-tabs']],
     [['Backspace'], []],
   ];
   for (const platform of ['darwin', 'win32', 'linux']) {

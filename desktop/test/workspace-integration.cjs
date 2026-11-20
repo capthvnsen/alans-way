@@ -166,13 +166,15 @@ app.whenReady().then(async () => {
     pointer(cx - 400, cy); await sleep(500); const left = shift(presence);
     pointer(cx + 400, cy); await sleep(500); const right = shift(presence);
     // Pointer still for a couple of seconds: the eyes drift back and the avatar idles (smaller glances than the extreme).
+    // Travel differs per side, so idle glances are compared with the widest glance the picture allows (as % of each eye's width).
+    const extreme = (index) => Math.max(marble.eyes.travel.left, marble.eyes.travel.right) / (2 * marble.eyes.radius * [marble.eyes.left, marble.eyes.right][index].scaleX) * 100;
     await sleep(3200);
     const idle = []; for (let i = 0; i < 8; i++) { await sleep(150); idle.push(shift(presence).map(Math.abs)); }
-    const idled = idle.every(pair => pair.every((value, index) => value < Math.abs(right[index]) * 0.8));
+    const idled = idle.every(pair => pair.every((value, index) => value < extreme(index) * 0.8));
     pointer(cx + 400, cy + 1); pointer(cx + 450, cy); await sleep(400);
     const followedAgain = shift(presence).every((value, index) => value > right[index] * 0.6);
     document.documentElement.dispatchEvent(new Event('mouseleave')); await sleep(3200);
-    const leftWindow = shift(presence).every((value, index) => Math.abs(value) < Math.abs(right[index]) * 0.8);
+    const leftWindow = shift(presence).every((value, index) => Math.abs(value) < extreme(index) * 0.8);
     window.HermesAvatars.update({ ...fixture, bots: bots.map(bot => ({ ...bot, activity: { state: 'idle' } })) });
     const idleNow = presence.classList.contains('hermes-avatar-active') === false;
     // Flat eyes and tint: only the marble image is filtered; the eyes stay pure black; pictures without eye data get no overlay.

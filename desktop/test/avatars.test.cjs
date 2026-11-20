@@ -78,6 +78,12 @@ test('every marble avatar records in-range eye geometry measured from its origin
     }
     assert.ok(left.x + eyes.radius < right.x - eyes.radius * right.scaleX, `${id} eyes do not overlap`);
     for (const edge of ['left', 'right', 'up', 'down']) assert.ok(eyes.travel[edge] > 0 && eyes.travel[edge] <= 0.05, `${id} travel.${edge}`);
+    // The gaze is readable (about 4 px of a 112 px avatar sideways and down) and a full glance still stays on the face.
+    assert.ok(eyes.travel.left >= 0.03 && eyes.travel.down >= 0.03 && eyes.travel.right >= 0.009, `${id} travel is readable`);
+    for (const [side, eye] of [['left', left], ['right', right]]) {
+      const rx = eyes.radius * eye.scaleX, ry = eyes.radius * eyes.aspect * eye.scaleY;
+      assert.ok(eye.x - rx - eyes.travel.left > 0.2 && eye.x + rx + eyes.travel.right < 0.8 && eye.y - ry - eyes.travel.up > 0.2 && eye.y + ry + eyes.travel.down < 0.6, `${id} ${side} stays on the face at full travel`);
+    }
   }
 });
 

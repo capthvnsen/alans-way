@@ -249,11 +249,21 @@ if (!process.versions.electron) {
         await until(async () => (await rows()).length === 6, 'fork paints the copied history');
       }
 
+      // Focus in the message box shows the same 2 px blue ring as every other control (#8baaf1 is 8:1 on the page).
+      shell.focus();
+      await run(`document.querySelector('#native-pane textarea').focus()`);
+      assert.equal(await run(`(() => { const c = getComputedStyle(document.querySelector('#native-pane .nc-composer')); return [c.outlineStyle, c.outlineWidth, c.outlineColor].join(' '); })()`), 'solid 2px rgb(139, 170, 241)', 'the message box has a focus ring');
+      await run(`document.activeElement.blur()`);
+      assert.equal(await run(`getComputedStyle(document.querySelector('#native-pane .nc-composer')).outlineStyle`), 'none', 'and only while focused');
       // The profile's Bot Chat is the one conversation of another surface native can write: same session id, no fork.
       const bot = (await native()).sessions.find((s) => s.title === 'Bot Chat');
       assert.ok(bot && bot.shared && !bot.readOnly, 'the Bot Chat is listed as shared');
       await click('#native-pane .nc-switch');
       assert.equal(await run(`document.querySelector('#native-pane .nc-menu-item[data-id="${bot.id}"] .nc-menu-meta').textContent`), 'Shared with Hermes Desktop');
+      // Chats made in this app are named for the app, not "Here".
+      const made = (await native()).sessions.find((s) => s.source === 'api_server' && !s.shared);
+      assert.ok(made, 'a chat made in this app is listed');
+      assert.equal(await run(`document.querySelector('#native-pane .nc-menu-item[data-id="${made.id}"] .nc-menu-meta').textContent.split(' · ')[0]`), 'Alan\'s Way');
       await click('#native-pane .nc-switch');
       await openSession(bot.id);
       await until(async () => (await run(`document.querySelector('#native-pane .nc-switch-title').textContent`)) === 'Bot Chat' && visible('#native-pane .nc-composer'), 'composer in the Bot Chat');

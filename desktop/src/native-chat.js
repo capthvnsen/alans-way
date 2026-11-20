@@ -158,7 +158,7 @@
     const days = (today - date) / 86400000;
     return `${date.toLocaleDateString([], days < 6 ? { weekday: 'long' } : { month: 'short', day: 'numeric', year: date.getFullYear() === today.getFullYear() ? undefined : 'numeric' })} ${fmtTime(ts)}`;
   }
-  const SOURCE_LABEL = { api_server: 'Here', telegram: 'Telegram', discord: 'Discord', slack: 'Slack', whatsapp: 'WhatsApp', signal: 'Signal', email: 'Email', cli: 'Terminal', tui: 'Terminal', desktop: 'Hermes Desktop', gui: 'Hermes Desktop', local: 'Hermes Desktop' };
+  const SOURCE_LABEL = { api_server: 'Alan\'s Way', telegram: 'Telegram', discord: 'Discord', slack: 'Slack', whatsapp: 'WhatsApp', signal: 'Signal', email: 'Email', cli: 'Terminal', tui: 'Terminal', desktop: 'Hermes Desktop', gui: 'Hermes Desktop', local: 'Hermes Desktop' };
   const sourceLabel = (source) => SOURCE_LABEL[source] || String(source || 'Hermes').replace(/_/g, ' ');
   const GAP = 15 * 60, CHUNK = 60;
 
@@ -214,6 +214,10 @@
     const jump = button('nc-jump hidden', 'Jump to latest', () => { pinned = true; toBottom(); jump.classList.add('hidden'); });
     const middle = el('div', 'nc-body');
     middle.append(scroller, jump);
+    const hint = el('div', 'nc-hint hidden', 'Wait for the reply to finish, or press Stop');
+    hint.setAttribute('role', 'status');
+    middle.append(hint);
+    let hintTimer;
     const composer = el('form', 'nc-composer');
     const textarea = document.createElement('textarea');
     textarea.rows = 1;
@@ -427,6 +431,10 @@
     textarea.addEventListener('compositionend', () => { composing = false; });
     textarea.addEventListener('keydown', (event) => {
       if (event.key === 'Enter' && !event.shiftKey && !composing && !event.isComposing) { event.preventDefault(); composer.requestSubmit(); }
+    });
+    textarea.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' || event.shiftKey || composing || event.isComposing || !state?.run || !textarea.value.trim()) return;
+      hint.classList.remove('hidden'); clearTimeout(hintTimer); hintTimer = setTimeout(() => hint.classList.add('hidden'), 4000);
     });
     composer.addEventListener('submit', (event) => {
       event.preventDefault();

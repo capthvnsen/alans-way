@@ -31,6 +31,12 @@ function shortcutReference(platform) {
         { id: 'tab-move', title: 'Switch browser tabs', description: 'Activate the previous or next tab; Home and End activate the first or last.', keys: [['←'], ['→'], ['Home'], ['End']], search: 'arrow left right' },
         { id: 'tab-close', title: 'Close focused tab', description: 'Close that tab and move focus to its neighbor.', keys: [[mac ? '⌦' : 'Delete']], search: 'delete forward delete' },
       ] },
+      { title: 'Chat & Canvas', note: 'Only while a Canvas tab or the native chat message box or conversation menu has keyboard focus.', rows: [
+        { id: 'move-canvas-tabs', title: 'Switch Canvas tabs', description: 'Activate the previous or next Canvas tab; Home and End activate the first or last.', keys: [['←'], ['→'], ['Home'], ['End']], search: 'arrow left right canvas' },
+        { id: 'native-send', title: 'Send a native chat message', description: 'Send the message in the box. While a reply is still coming it waits for you.', keys: [[mac ? '↩' : 'Enter']], search: 'return enter message' },
+        { id: 'native-newline', title: 'New line in a native chat message', description: 'Start a new line without sending.', keys: [[mac ? '⇧' : 'Shift', mac ? '↩' : 'Enter']], search: 'return enter message' },
+        { id: 'native-menu-close', title: 'Close the conversation menu', description: 'Close the native chat conversation list and return to its button. The draft is kept.', keys: [['Esc']], search: 'escape native chat' },
+      ] },
       { title: 'Search & dialogs', note: 'These keys belong to the focused search field or the frontmost dialog.', rows: [
         { id: 'search-result', title: 'Reach an agent search result', description: 'From agent search, focus the first matching agent.', keys: [['↓']], search: 'arrow down' },
         { id: 'search-close', title: 'Clear or close agent search', description: 'Clear a search first; press again when empty to close it.', keys: [['Esc']], search: 'escape' },
