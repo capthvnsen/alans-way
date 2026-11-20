@@ -39,12 +39,14 @@ test('only same-origin favicons may be fetched', () => {
 test('the favicon queue keeps every same-origin candidate in page order', () => {
   const page = 'https://a.example/page';
   const { targets, inline } = faviconQueue(page, ['https://cdn.other.example/x.png', 'https://a.example/one.ico', 'https://a.example/one.ico', 'https://a.example/two.png', 'data:image/png;base64,x']);
-  assert.deepEqual(targets, ['https://a.example/one.ico', 'https://a.example/two.png'], 'cross-origin candidates drop, duplicates collapse');
+  assert.deepEqual(targets, ['https://a.example/one.ico', 'https://a.example/two.png', 'https://a.example/favicon.ico'], 'cross-origin candidates drop, duplicates collapse, the origin icon is the last resort');
   assert.equal(inline, 'data:image/png;base64,x', 'a decoded inline icon stays the last fallback');
-  assert.deepEqual(faviconQueue(page, ['https://evil.example/x.png']), { targets: [], inline: '' }, 'a cross-origin url never renders directly');
+  assert.deepEqual(faviconQueue(page, ['https://evil.example/x.png']), { targets: ['https://a.example/favicon.ico'], inline: '' }, 'a cross-origin url is never fetched or rendered; only the origin icon is tried');
+  for (const scheme of ['file:///etc/passwd', 'crx://x/icon.png', 'hw-avatar:bot', 'javascript:alert(1)', 'data:text/html,x']) assert.equal(faviconQueue(page, [scheme]).inline, '', `${scheme} never becomes an inline icon`);
   assert.equal(faviconQueue(page, ['data:,']).inline, '', 'the blank-data sentinel is not an icon');
   const many = Array.from({ length: 9 }, (_, i) => `https://a.example/${i}.png`);
   assert.equal(faviconQueue(page, many).targets.length, 6, 'the serial fetch queue is bounded');
+  assert.deepEqual(faviconQueue('file:///tmp/x.html', ['file:///tmp/i.png']).targets, [], 'only http(s) pages get fetches');
 });
 test('bot-visible tab metadata seals url, title, icon and note on human-controlled tabs', () => {
   const info = { id: 't', url: 'https://a.example/private?token=1', title: 'Secret page', favicon: 'data:image/png;base64,x', controller: 'human', handoff: { phase: 'handed_off', destinationTabId: 't2', note: 'do this' } };
@@ -654,4 +656,20 @@ test('a Mac tab the VM resumed while away is retired once, pointing agents at th
   assert.equal(continuedOnVm(undefined, 'vm-9'), null);
   assert.equal(continuedOnVm({ ...tab, handoff: { ...record, phase: 'reviewed' } }, 'vm-9'), null, 'the human reopened it for agents after this move');
   assert.ok(continuedOnVm({ ...tab, handoff: { ...record, phase: 'reviewed' } }, 'vm-10'), 'a later move is retired again');
+});
+
+test('a favicon body is read up to its cap and no further, even when the page serves an endless one', { timeout: 3000 }, async () => {
+  const { readCapped } = require('../src/core.cjs');
+  let pulled = 0;
+  const endless = new Response(new ReadableStream({ pull(controller) { pulled += 65536; controller.enqueue(new Uint8Array(65536)); } }), { headers: { 'content-type': 'image/png' } });
+  assert.equal(await readCapped(endless, 262144), null);
+  assert.ok(pulled <= 262144 + 4 * 65536, `read ${pulled} bytes of an endless body`);
+  assert.equal(await readCapped(new Response(new Uint8Array(10)), 262144).then((buffer) => buffer.length), 10);
+  assert.equal(await readCapped(new Response(new Uint8Array(10), { headers: { 'content-length': '999999999' } }), 262144), null);
+});
+
+test('an inline favicon over the fetched-icon ceiling is dropped, a small one is kept', () => {
+  const small = 'data:image/png;base64,AAAA', huge = `data:image/png;base64,${'A'.repeat(400000)}`;
+  assert.equal(faviconQueue('https://a.example/', [huge, small]).inline, small);
+  assert.equal(faviconQueue('https://a.example/', [huge]).inline, '');
 });

@@ -178,7 +178,7 @@ app.whenReady().then(async () => {
   await refreshVm();
   assert.equal(shown.length, 4, 'leaving and re-entering awaiting_human notifies again');
   assert.equal((await getState()).activeVpsTabId, '');
-  await invoke('toggle-vps-view');
+  await invoke('canvas-tab', { tab: 'screen' });
   assert.equal((await getState()).activeVpsTabId, remoteTab.id, 'opening the VM selects the waiting tab');
   await waitFor(() => evaluate('!!document.getElementById("needs-you-banner").offsetParent && !!document.getElementById("needs-you-give-back").offsetParent'), Boolean);
   await invoke('activate', { id: tab.id, host: tab.host });
@@ -213,13 +213,13 @@ app.whenReady().then(async () => {
   await waitFor(getState, state => state.activeTabId === 'vps' && state.activeVpsTabId === remoteTab.id);
   await waitFor(() => evaluate('!!document.getElementById("needs-you-give-back").offsetParent'), Boolean);
   await invoke('activate', { id: idleVm.id, host: 'vps' });
-  await invoke('toggle-vps-view');
-  await invoke('toggle-vps-view');
+  await invoke('canvas-tab', { tab: 'browser' });
+  await invoke('canvas-tab', { tab: 'screen' });
   assert.equal((await getState()).activeVpsTabId, idleVm.id, 'a valid VM selection is preserved');
   remoteTabs.delete(idleVm.id);
   await refreshVm();
-  await invoke('toggle-vps-view');
-  await invoke('toggle-vps-view');
+  await invoke('canvas-tab', { tab: 'browser' });
+  await invoke('canvas-tab', { tab: 'screen' });
   assert.equal((await getState()).activeVpsTabId, remoteTab.id, 'a gone VM selection falls back to the waiting tab');
 
   const vmTab = (await api('/v1/tabs', 'POST', { host: 'vm', url: 'https://login.example/' })).data;

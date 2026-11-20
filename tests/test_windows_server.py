@@ -195,6 +195,18 @@ class ConfigTests(unittest.TestCase):
         self.assertIn('hermes_companion.windows_server', command)
         self.assertIn("'C:\\work\\approved dir'", command)
 
+    def test_windows_paths_reject_quote_lookalikes_that_end_a_powershell_literal(self):
+        # PowerShell treats typographic quotes as quote characters, so an
+        # ASCII-only escape would let one close the single-quoted literal.
+        from hermes_companion.config import build_mcp_config, validate_windows_path
+        for quote in '\u2018\u2019\u201a\u201b\u201c\u201d\u201e':
+            payload = 'C:\\ws' + quote + '; calc; ' + quote
+            with self.subTest(quote=hex(ord(quote))):
+                with self.assertRaises(ValueError):
+                    validate_windows_path(payload)
+                with self.assertRaises(ValueError):
+                    build_mcp_config('operator@' + TAILNET, 'C:\\Python\\python.exe', payload, host_os='windows')
+
     def test_windows_config_rejects_posix_and_traversal_paths(self):
         from hermes_companion.config import build_mcp_config
         for python in ['/opt/python', 'C:\\\\server\\python', '${x}', 'python']:

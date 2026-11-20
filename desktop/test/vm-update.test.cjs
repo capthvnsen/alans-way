@@ -463,8 +463,40 @@ test('doctorVm says when the server check ran out of time or stopped without a r
     { ok: false, error: 'The server check stopped without a report: second third' });
   assert.deepEqual(await doctor({ code: 1, out: 'progress\n', err: 'sh: node: not found\n' }),
     { ok: false, error: 'The server check stopped without a report: progress sh: node: not found' });
-  const check = await createVmUpdater({ run: fakeRun({ code: null, out: '', err: '' }).run, readScript }).checkVm(vm());
-  assert.equal(check.error, 'Could not reach the VM over SSH. exit null', 'checkVm keeps its message');
+});
+
+test('a guest that never answers is reported as a timeout, not as unreachable', async () => {
+  const silent = fakeRun({ code: null, out: '', err: '' });
+  const updater = createVmUpdater({ run: silent.run, readScript });
+  const check = await updater.checkVm(vm());
+  assert.match(check.error, /did not answer within 90 seconds/);
+  const update = await updater.updateVm(vm(), 'v0.3.2');
+  assert.equal(update.state, 'failed');
+  assert.match(update.error, /did not answer within 300 seconds/);
+  assert.equal(silent.calls.length, 2, 'a timed out call is never repeated');
+});
+
+test('a read-only check retries one dropped connection, an update never does', async () => {
+  const dropped = { code: 255, out: '', err: `ssh: connect to host ${fixtureTailnet} port 22: Connection reset` };
+  const answer = { code: 0, out: '{"ok":true,"version":"0.3.1","hostVersion":"0.3.1","busy":false}', err: '' };
+  const responses = [dropped, answer];
+  const flaky = fakeRun(() => responses.shift());
+  const slept = [];
+  const updater = createVmUpdater({ run: flaky.run, readScript, sleep: async (ms) => { slept.push(ms); } });
+  const check = await updater.checkVm(vm());
+  assert.equal(check.ok, true);
+  assert.equal(flaky.calls.length, 2);
+  assert.equal(slept.length, 1);
+
+  const down = fakeRun(dropped);
+  const failed = await createVmUpdater({ run: down.run, readScript, sleep: async () => {} }).checkVm(vm());
+  assert.equal(failed.ok, false);
+  assert.match(failed.error, /Connection reset/);
+  assert.equal(down.calls.length, 2, 'one retry, no more');
+
+  const update = fakeRun(dropped);
+  await createVmUpdater({ run: update.run, readScript, sleep: async () => {} }).updateVm(vm(), 'v0.3.2');
+  assert.equal(update.calls.length, 1, 'an update may have started on the guest; it is not repeated');
 });
 
 test('a successful guest with no version never manufactures the requested host version', async () => {

@@ -120,4 +120,6 @@ python3 -m unittest tests.test_publication tests.test_ios_bundle
 python3 scripts/check_publication.py
 ```
 
+The plugin entry-point tests (`test_hermes_plugin`) need only the standard library; the HTTP broker tests skip themselves when aiohttp is not installed, so run them from the virtual environment above. CI does not run `mobile/tests` yet.
+
 The Mini App tests feed synthetic PCM frames into the detector and actual controller, including pre-roll, speech/silence, adaptive noise, min/max duration, playback/barge-in, mute, permission prompts, background cleanup, and temporary interruptions. The HTTP integration tests use a synthetic Telegram signature and fake speech service over aiohttp's actual HTTP test servers. The adapter test verifies the dashboard route paths, profile scope, and session-token header. The broker tests verify auth, caps, exact conversation binding, once-only transcript/injection, early reply text, durable interruption and stale-audio suppression, close behavior, retry behavior, and unknown status after restart. They do not claim a live Telegram, Hermes gateway, provider, or iPhone run.

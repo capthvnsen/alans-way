@@ -71,12 +71,29 @@ function faviconTarget(pageUrlValue, iconUrl) {
   } catch { return ''; }
 }
 
+// A page picks the favicon address, so its body is read only up to `max` bytes: arrayBuffer() would hold an endless reply in memory until the timeout.
+async function readCapped(response, max) {
+  if (Number(response.headers.get('content-length')) > max) { response.body?.cancel().catch(() => {}); return null; }
+  const reader = response.body?.getReader();
+  if (!reader) return null;
+  const chunks = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) return Buffer.concat(chunks);
+    size += value.length;
+    if (size > max) { reader.cancel().catch(() => {}); return null; }
+    chunks.push(value);
+  }
+}
 // A page names every candidate icon; the fetch queue keeps the same-origin
 // http(s) ones in the page's own order so a cross-origin or dead first
-// candidate does not sink the tab's icon. Non-URL candidates (an inline
-// data: icon Chromium already decoded) ride along as the last fallback.
-// The queue is capped: fetches run serially, so a page naming dozens of
-// icons cannot stall the icon or hang the resolver.
+// candidate does not sink the tab's icon. Sites that name only a CDN icon
+// (GitHub) fall back to the origin's /favicon.ico, which is what a browser
+// tries too. An inline data:image icon Chromium already decoded rides along
+// as the last fallback; every other scheme (file:, crx:, javascript:) never
+// reaches the renderer. The queue is capped: fetches run serially, so a page
+// naming dozens of icons cannot stall the icon or hang the resolver.
 function faviconQueue(pageUrlValue, favicons) {
   const targets = [];
   for (const item of favicons) {
@@ -85,7 +102,10 @@ function faviconQueue(pageUrlValue, favicons) {
     const target = faviconTarget(pageUrlValue, item);
     if (target && !targets.includes(target)) targets.push(target);
   }
-  const inline = favicons.find((item) => item && item !== 'data:,' && !/^https?:\/\//i.test(item)) || '';
+  const root = faviconTarget(pageUrlValue, '/favicon.ico');
+  if (root && targets.length < 6 && !targets.includes(root)) targets.push(root);
+  // Same ceiling as a fetched icon (base64 of 256 KB): a page's data: icon rides in every state push.
+  const inline = favicons.find((item) => /^data:image\//i.test(String(item)) && String(item).length <= 350000) || '';
   return { targets, inline };
 }
 
@@ -413,4 +433,4 @@ function hostShouldReload(mtime, started, inFlight) {
   return inFlight === 0 && Number(mtime) > Number(started);
 }
 
-module.exports = { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, faviconQueue, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, takeoverDelay, reviewedHandoff, continuedOnVm, isAuthorized, sanitizeBots, retargetMissingTab, needsContinuedEpoch, hostShouldReload, errorMessage, followVmRemoteUrl, HANDBACK_REASONS, HANDBACK_MS, handbackRequest, liveHandback, nextHandback, dialogAnswer, answerDialog, challengeReply, captchaHandback, captchaWatchStep, viewerUrl, cdpChallengeSafe };
+module.exports = { readCapped, normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, faviconQueue, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, takeoverDelay, reviewedHandoff, continuedOnVm, isAuthorized, sanitizeBots, retargetMissingTab, needsContinuedEpoch, hostShouldReload, errorMessage, followVmRemoteUrl, HANDBACK_REASONS, HANDBACK_MS, handbackRequest, liveHandback, nextHandback, dialogAnswer, answerDialog, challengeReply, captchaHandback, captchaWatchStep, viewerUrl, cdpChallengeSafe };

@@ -1,6 +1,6 @@
 'use strict';
 
-// The bottom bar's versions and its one-click "Update everything": reading
+// The versions in Settings → About and the one-click "Update everything": reading
 // what the agent machine reports, deciding what is behind, and running the
 // update steps in order (Hermes, its plugin, the browser host, then this app)
 // with the first failure stopping the rest.

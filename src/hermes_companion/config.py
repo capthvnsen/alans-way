@@ -29,6 +29,9 @@ SSH_OPTIONS = ((
 ) if REQUIRE_TAILNET else ()) + (
     "-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
     "-o", "ConnectTimeout=5",
+    # A Mac that sleeps or drops off the tailnet leaves ssh waiting on TCP for
+    # hours; ~30 s of silence ends the session so Hermes reconnects.
+    "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=2",
 )
 
 
@@ -70,12 +73,17 @@ def validate_absolute_path(value: str) -> str:
     return value
 
 
+# PowerShell's parser accepts these as quote characters, so doubling only the
+# ASCII ' in _ps_join would leave them able to end a single-quoted literal.
+_PS_QUOTE_LOOKALIKES = re.compile("[\u2018\u2019\u201a\u201b\u201c\u201d\u201e]")
+
+
 def validate_windows_path(value: str) -> str:
     """Validate remote Windows spelling: drive-lettered, no traversal or device names."""
     # Keep the drive's separator: stripping it turns C:\ into drive-relative C:.
     normalized = value[:3] + value[3:].rstrip("/\\") if isinstance(value, str) else value
     if (not isinstance(normalized, str) or not re.fullmatch(r"[A-Za-z]:[\\/][^<>\"|?*]*", normalized)
-            or _has_control(normalized)
+            or _has_control(normalized) or _PS_QUOTE_LOOKALIKES.search(normalized)
             or (normalized[3:] and any(part in ("", ".", "..") for part in re.split(r"[\\/]", normalized[3:])))
             or "${" in normalized):
         raise ValueError("remote paths must be absolute Windows paths (X:\\...) without traversal, control characters, or interpolation")

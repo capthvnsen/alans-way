@@ -468,6 +468,7 @@ STATE="$FAKE_HERMES_STATE"
 P=default
 if [ "\${1:-}" = "-p" ]; then P="$2"; shift 2; fi
 printf 'hermes -p %s %s\\n' "$P" "$*" >> "$STATE/hermes.log"
+[ -f "$STATE/delay" ] && sleep "$(cat "$STATE/delay")"
 [ -n "\${FAKE_SVC_LOG:-}" ] && printf 'hermes -p %s %s\\n' "$P" "$*" >> "$FAKE_SVC_LOG"
 GWFILE="$STATE/gwstate"
 GWPROFILE="$GWFILE"
@@ -644,6 +645,25 @@ test('--check also reports Hermes, its update verdict, the plugin version and th
   assert.equal(result.gatewayRunning, true);
   fs.writeFileSync(path.join(state, 'gwstate'), 'stopped\n');
   assert.equal(lastJson(await runScript(['--check'], envFor(checkout, makeDataDir(port), bin, pluginEnv(home, state)))).gatewayRunning, false);
+});
+
+test('--check asks Hermes for its version, update verdict and gateway at the same time', async () => {
+  const { bin } = makeBin();
+  const state = makeHermesState();
+  addHermes(bin, state);
+  fs.writeFileSync(path.join(state, 'delay'), '1');
+  fs.writeFileSync(path.join(state, 'gwstate'), 'running\n');
+  const home = makeHermesHome();
+  addPlugin(home, 'default', 'alans-way', '0.21.0');
+  const port = await makeStatus({ version: '0.3.1', busy: false });
+  const began = Date.now();
+  const result = lastJson(await runScript(['--check'], envFor(makeCheckout(remote), makeDataDir(port), bin, pluginEnv(home, state))));
+  const took = Date.now() - began;
+  assert.equal(result.hermesVersion, 'Hermes Agent v0.21.6+12.gabc (2026.9.24) · stable');
+  assert.equal(result.hermesCheck, '✓ Already up to date.');
+  assert.equal(result.gatewayRunning, true);
+  assert.ok(took < 2800, `three one-second Hermes calls took ${took} ms; they ran one after another`);
+  assert.deepEqual(fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith('vm-update-check.')), [], 'no scratch directory is left behind');
 });
 
 test('--check without hermes reports empty Hermes fields and no gateway verdict', async () => {
@@ -2497,4 +2517,80 @@ test('catalog metadata and marker leave a file source clone untouched', async ()
     assert.equal(git(clone, 'rev-parse', 'HEAD'), head); assert.match(log(), /plugins update alans-way/);
     assert.equal(fs.readFileSync(path.join(clone, 'local.txt'), 'utf8'), 'keep this');
   }
+});
+
+// A fake npm that fails (or hangs) only while the checkout is on 0.3.2, and
+// logs the version each install ran against.
+function failingNpm(bin, marker, behaviour) {
+  fs.writeFileSync(path.join(bin, 'npm'), `#!/bin/sh
+echo "npm $* $(grep -o '"version":"[0-9.]*"' package.json)" >> "${marker}"
+grep -q '"version":"0.3.2"' package.json || exit 0
+${behaviour}
+`, { mode: 0o755 });
+}
+const npmRuns = (marker) => fs.readFileSync(marker, 'utf8').split('\n').filter((line) => line.startsWith('npm '));
+
+test('a failed dependency install puts the previous checkout and its dependencies back', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin, marker } = makeBin();
+  failingNpm(bin, marker, 'exit 1');
+  const data = makeDataDir(await makeStatus({ version: '0.3.1', busy: false }));
+  const res = await runScript(['v0.3.2'], envFor(checkout, data, bin));
+  const result = lastJson(res);
+  assert.equal(result.ok, false);
+  assert.match(result.error, /npm ci failed/);
+  assert.match(result.error, /rolled back to 0\.3\.1/i);
+  assert.equal(result.version, '0.3.1');
+  assert.equal(git(checkout, 'rev-parse', 'HEAD').trim(), git(checkout, 'rev-parse', 'v0.3.1^{commit}').trim());
+  const runs = npmRuns(marker);
+  assert.equal(runs.length, 2, runs.join('\n'));
+  assert.match(runs[1], /0\.3\.1/, 'the old version got its dependencies reinstalled');
+  assert.doesNotMatch(fs.readFileSync(marker, 'utf8'), /restart hermes-alans-way-browser/, 'the running broker was never touched');
+});
+
+test('a rollback returns to the branch the checkout was on', async () => {
+  const checkout = makeCheckout(remote);
+  git(checkout, 'checkout', '-q', '-b', 'work');
+  const { bin, marker } = makeBin();
+  failingNpm(bin, marker, 'exit 1');
+  const data = makeDataDir(await makeStatus({ version: '0.3.1', busy: false }));
+  const result = lastJson(await runScript(['v0.3.2'], envFor(checkout, data, bin)));
+  assert.equal(result.ok, false);
+  assert.equal(git(checkout, 'rev-parse', '--abbrev-ref', 'HEAD').trim(), 'work');
+});
+
+test('an install that hangs is cut off and rolled back inside the run budget', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin, marker } = makeBin();
+  failingNpm(bin, marker, 'exec sleep 60');
+  const data = makeDataDir(await makeStatus({ version: '0.3.1', busy: false }));
+  const began = Date.now();
+  const result = lastJson(await runScript(['v0.3.2'], envFor(checkout, data, bin, { ALANS_WAY_VM_NPM_TIMEOUT: '2' })));
+  assert.ok(Date.now() - began < 30000, 'the hung install did not wait out its sleep');
+  assert.equal(result.ok, false);
+  assert.match(result.error, /npm ci failed/);
+  assert.match(result.error, /rolled back to 0\.3\.1/i);
+});
+
+test('a restart that comes back on the wrong version is rolled back and restarted again', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin, marker } = makeBin();
+  const data = makeDataDir(await makeStatus({ version: '0.3.1', busy: false }));
+  const result = lastJson(await runScript(['v0.3.2'], envFor(checkout, data, bin, { ALANS_WAY_VM_HEALTH_WAIT: '2' })));
+  assert.equal(result.ok, false);
+  assert.match(result.error, /did not come back on v0\.3\.2/);
+  assert.match(result.error, /rolled back to 0\.3\.1/i);
+  assert.equal(git(checkout, 'rev-parse', 'HEAD').trim(), git(checkout, 'rev-parse', 'v0.3.1^{commit}').trim());
+  assert.equal((fs.readFileSync(marker, 'utf8').match(/restart hermes-alans-way-browser/g) || []).length, 2, 'old code is running again');
+});
+
+test('a rollback whose dependency reinstall fails says how to finish it by hand', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin, marker } = makeBin();
+  fs.writeFileSync(path.join(bin, 'npm'), `#!/bin/sh\necho "npm $*" >> "${marker}"\nexit 1\n`, { mode: 0o755 });
+  const data = makeDataDir(await makeStatus({ version: '0.3.1', busy: false }));
+  const result = lastJson(await runScript(['v0.3.2'], envFor(checkout, data, bin)));
+  assert.equal(result.ok, false);
+  assert.match(result.error, /npm ci/);
+  assert.match(result.error, /dependencies/i);
 });

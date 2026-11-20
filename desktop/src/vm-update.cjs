@@ -33,6 +33,9 @@ const VM_TIMEOUT_REMOTE_S = 285;
 const HERMES_UPDATE_TIMEOUT_MS = 300000;
 const HERMES_UPDATE_REMOTE_S = 285;
 const SNOOZE_MS = 24 * 60 * 60 * 1000;
+// A read-only check gets one more try after a dropped connection; a call that
+// changes the machine never does, because it may already have started there.
+const READ_ONLY_RETRY_DELAY_MS = 1500;
 const SCRIPTS = { posix: 'vm-update.sh', windows: 'vm-update.ps1' };
 const HERMES_UPDATE_SCRIPTS = { posix: 'hermes-update.sh', windows: 'hermes-update.ps1' };
 
@@ -78,7 +81,7 @@ function defaultRun(bin, args, { input, timeoutMs = 45000, onStdout, verbatim = 
 
 const defaultReadScript = (name) => fs.readFileSync(path.join(__dirname, '..', 'scripts', name), 'utf8');
 
-function createVmUpdater({ run = defaultRun, readScript = defaultReadScript, log = () => {} } = {}) {
+function createVmUpdater({ run = defaultRun, readScript = defaultReadScript, log = () => {}, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = {}) {
   const ssh = (host, remote, opts) => run('ssh', [...SSH_OPTIONS, host, remote], opts);
   // The remote command is what sshd would hand the guest's shell; locally the
   // same string goes to sh, or to cmd with the whole line quoted once more so
@@ -144,10 +147,16 @@ function createVmUpdater({ run = defaultRun, readScript = defaultReadScript, log
         if (mapped) onProgress(vm.id, mapped);
       }
     } : undefined;
-    const res = await exec(vm, remote, { input: text, timeoutMs, onStdout });
+    let res = await exec(vm, remote, { input: text, timeoutMs, onStdout });
+    if (check && res.code === 255 && !parseResultLine(res.out)) {
+      await sleep(READ_ONLY_RETRY_DELAY_MS);
+      res = await exec(vm, remote, { input: text, timeoutMs, onStdout });
+    }
     const result = parseResultLine(res.out) || {};
     if (doctor && !Object.keys(result).length) return res.code === null ? { ok: false, error: 'The server check ran out of time.' }
       : { ok: false, executionError: { prefix: 'The server check stopped without a report: ', text: `${res.out}\n${res.err}`, fallback: `exit ${res.code}` } };
+    if (res.code === null && !Object.keys(result).length)
+      return { ok: false, state: 'failed', error: `The VM did not answer within ${Math.round(timeoutMs / 1000)} seconds. Its connection may be down or the VM busy; try again.` };
     if (res.code !== 0 && !Object.keys(result).length)
       return { ok: false, state: 'failed', executionError: { prefix: 'Could not reach the VM over SSH. ', text: res.err, fallback: `exit ${res.code}` } };
     return result;

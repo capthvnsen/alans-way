@@ -23,6 +23,7 @@ class ConfigTests(unittest.TestCase):
         ] if REQUIRE_TAILNET else []) + [
             "-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
             "-o", "ConnectTimeout=5",
+            "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=2",
         ])
         self.assertEqual(server["args"][-2], "operator@" + TAILNET)
         self.assertEqual(shlex.split(server["args"][-1]), [

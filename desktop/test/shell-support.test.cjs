@@ -290,3 +290,19 @@ test('keepBots drops removed bots and keeps the built-in row; plainLine flattens
   assert.equal(plainLine('::card{title="x"}\nDone.'), 'Done.');
   assert.equal(plainLine('a'.repeat(300)).length, 120);
 });
+
+test('a queued task that never settles is released at its deadline and the next task runs', { timeout: 3000 }, async () => {
+  const { queueWithDeadline } = require('../src/shell-support.cjs');
+  let queue = Promise.resolve(), timedOut = 0;
+  const first = queueWithDeadline(queue, () => new Promise(() => {}), 30, () => { timedOut++; });
+  queue = first.tail;
+  const second = queueWithDeadline(queue, async () => 'ran', 30);
+  queue = second.tail;
+  await assert.rejects(first.work, (error) => error.status === 503 && /did not answer/.test(error.message));
+  assert.equal(await second.work, 'ran');
+  assert.equal(timedOut, 1);
+  // An ordinary failure still reaches its caller and does not fire the deadline hook.
+  const failed = queueWithDeadline(queue, async () => { throw Object.assign(new Error('boom'), { status: 409 }); }, 1000, () => { timedOut++; });
+  await assert.rejects(failed.work, { status: 409 });
+  assert.equal(timedOut, 1);
+});

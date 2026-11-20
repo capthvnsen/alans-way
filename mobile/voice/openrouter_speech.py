@@ -71,9 +71,10 @@ class OpenRouterSpeech:
 
 
 def register_speech_providers(ctx):
-    from agent.secret_scope import get_secret
-    from agent.tts_provider import TTSProvider
-    from agent.transcription_provider import TranscriptionProvider
+    from .hermes_plugin import _hermes_api
+    get_secret = _hermes_api("agent.secret_scope", "get_secret")
+    TTSProvider = _hermes_api("agent.tts_provider", "TTSProvider")
+    TranscriptionProvider = _hermes_api("agent.transcription_provider", "TranscriptionProvider")
 
     speech = OpenRouterSpeech(lambda: get_secret("OPENROUTER_API_KEY") or "")
 
