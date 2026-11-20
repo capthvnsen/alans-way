@@ -22,8 +22,12 @@ function privateTmp() {
     env: { TMPDIR: dir, TMP: dir, TEMP: dir,
       NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --require ${path.join(__dirname, 'tmp-cleanup.cjs')}`.trim() },
     finish() {
-      const left = fs.readdirSync(dir).filter(name => !ALLOWED.test(name) && !isProfile(path.join(dir, name)));
+      const all = fs.readdirSync(dir).filter(name => !ALLOWED.test(name) && !isProfile(path.join(dir, name)));
+      // Only a mkdtemp name (prefix, dash, six characters) is a test's own folder. Tools the tests run (pwsh, Chrome) leave
+      // their own files here; those are swept with the folder and only reported.
+      const left = all.filter(name => /^[A-Za-z][\w-]*-[A-Za-z0-9]{6}$/.test(name));
       fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+      if (all.length > left.length) console.error(`Swept ${all.length - left.length} file(s) left by tools the tests ran.`);
       if (left.length) { console.error(`TEMP LEAK: the tests left ${left.length} folder(s) behind: ${left.slice(0, 10).join(', ')}`); return false; }
       return true;
     },
