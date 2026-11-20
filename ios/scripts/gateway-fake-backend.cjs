@@ -10,7 +10,10 @@
 //   GET /restart  a Hermes restart: new epoch, every runtime session gone
 //   GET /stop     go offline: refuse connections and close every socket (the gateway "goes away")
 //   GET /start    come back online on the same port
+//   GET /answers  the app's answers to server requests so far, as JSON
 //   GET /quit     shut down
+// A message containing "approval" makes the fake ask for approval of a command before it replies; "clarify" makes it
+// ask a question. The reply holds until the app answers and then names the answer.
 const http = require('node:http');
 const path = require('node:path');
 const { fakeBackend } = require(path.join(__dirname, '../../desktop/test/hermes-auth-fake-backend.cjs'));
@@ -34,10 +37,30 @@ const REPLY = [
 // The reply streams as words so a drop mid-reply has something to resume.
 const wordsOf = (text) => text.match(/\S+\s*/g) || [text];
 
+const answers = [];
+const waiting = new Map();   // server request id -> resolve the held turn
+let requestCount = 0;
+
 (async () => {
   const be = await fakeBackend({
+    onWsResponse: (frame) => { answers.push({ id: frame.id, result: frame.result ?? null, error: frame.error ?? null }); waiting.get(frame.id)?.(); waiting.delete(frame.id); },
+    beforeTurn: (session, text) => {
+      const kind = /clarify/i.test(text) ? 'clarify' : /approval/i.test(text) ? 'approval' : null;
+      if (!kind) return null;
+      const id = `fake-req-${++requestCount}`;
+      const params = kind === 'approval'
+        ? { session_id: session.id, command: 'echo hello', description: 'Print a greeting', choices: ['once', 'session', 'always', 'deny'] }
+        : { session_id: session.id, questions: [{ qid: 'q1', question: 'Which name should I greet?' }] };
+      for (const peer of session.peers) peer.send({ jsonrpc: '2.0', id, method: kind, params });
+      return new Promise((resolve) => waiting.set(id, resolve));
+    },
     tokenTag: 'ios', epoch: 'fake-epoch-1', deltaMs: 0, wholeReply: whole,
-    tokens: (text) => wordsOf(/code|example/i.test(text) ? REPLY : `You said: ${text}`),
+    tokens: (text) => {
+      const last = answers.at(-1)?.result;
+      if (/clarify/i.test(text) && last?.answers) return wordsOf(`Hello, ${last.answers.q1}!`);
+      if (/approval/i.test(text) && last?.choice) return wordsOf(`Decision: ${last.choice}.`);
+      return wordsOf(/code|example/i.test(text) ? REPLY : `You said: ${text}`);
+    },
     sessions: [
       { id: 'sess-1', session_key: 'key-1', title: 'Planning the week', profile: 'default' },
       { id: 'sess-2', session_key: 'key-2', title: 'Release notes', profile: 'default' },
@@ -60,6 +83,7 @@ const wordsOf = (text) => text.match(/\S+\s*/g) || [text];
   be.cfg.deltaMs = deltaMs; // seeded instantly; replies to the app arrive at the requested pace
 
   const control = http.createServer((req, res) => {
+    if (req.url === '/answers') { res.end(JSON.stringify(answers)); return; }
     res.end('ok');
     if (req.url === '/drop') be.dropSockets();
     else if (req.url === '/restart') be.restart();

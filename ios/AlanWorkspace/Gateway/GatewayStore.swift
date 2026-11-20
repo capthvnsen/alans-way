@@ -92,7 +92,15 @@ final class GatewayStore {
         l.onLive = { [weak self] in self?.becameLive() }
         l.onRefusedRequest = { [weak self] id, _ in
             guard let self, let id else { return }
-            self.threads[id, default: GatewayThread()].notice = "Alan asked for approval, which this app cannot answer yet. Answer it from the desktop app."
+            self.threads[id, default: GatewayThread()].notice = "Alan asked for something this app cannot answer yet. Answer it from the desktop app."
+        }
+        l.onRequest = { [weak self] id, r in
+            guard let self, let prompt = GatewayPrompt(method: r.method, id: r.id, params: r.params) else { return }
+            if self.threads[id]?.prompts.contains(where: { $0.id == prompt.id }) != true { self.threads[id, default: GatewayThread()].prompts.append(prompt) }
+        }
+        l.onRequestClosed = { [weak self] key, id, dropped in
+            self?.threads[id]?.prompts.removeAll { $0.id == key }
+            if dropped { self?.threads[id]?.notice = "The connection dropped while Alan waited for your answer. Send a message to continue." }
         }
         link = l
         linkState = l.state
@@ -181,6 +189,18 @@ final class GatewayStore {
 
     func closeConversation(_ id: String) { _ = id }
 
+    /// Answers an approval (`once`, `session`, `always`, `deny`) or a clarify question (the typed text).
+    func answer(_ promptID: String, in id: String, with answer: String) {
+        guard let link, let prompt = threads[id]?.prompts.first(where: { $0.id == promptID }), let result = prompt.result(for: answer) else { return }
+        do {
+            try link.answerRequest(promptID, result: result)
+            threads[id]?.prompts.removeAll { $0.id == promptID }
+        } catch {
+            threads[id]?.prompts.removeAll { $0.id == promptID }
+            threads[id]?.notice = "Alan is no longer waiting for that answer."
+        }
+    }
+
     /// Reads the stored history again and replaces what is shown. Events that arrive meanwhile wait, then apply on top.
     func reload(_ id: String) {
         guard let link else { return }
@@ -247,7 +267,7 @@ final class GatewayStore {
         case "tool.start":
             t.statusLine = e.payload["name"]?.string.map { "Using \($0)…" }
         case "tool.complete":
-            t.statusLine = nil
+            t.statusLine = nil; t.prompts = []
         case "message.complete":
             let status = e.payload["status"]?.string ?? "complete"
             let streamed = streamingIndex().map { t.rows[$0].text } ?? ""
@@ -258,7 +278,7 @@ final class GatewayStore {
                 t.replyCount += 1
                 t.rows.append(GatewayMessage(id: "reply-\(t.replyCount)", role: .assistant, text: text, date: clock.now))
             }
-            t.busy = false; t.statusLine = nil
+            t.busy = false; t.statusLine = nil; t.prompts = []
             if ["interrupted", "cancelled"].contains(status) { t.notice = "Stopped." }
             else if ["error", "failed"].contains(status) { t.notice = e.payload["error"]?.string ?? "Hermes could not finish this reply." }
         case "error":

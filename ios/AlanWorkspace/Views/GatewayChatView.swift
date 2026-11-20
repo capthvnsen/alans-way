@@ -79,7 +79,10 @@ struct GatewayChatView: View {
                         GatewayBubble(message: message, onCancel: { gateway.cancel(message.id) }, onRetry: { gateway.retry(message.id) })
                             .id(message.id)
                     }
-                    if thread.busy && messages.last?.isStreaming != true { replyingRow }
+                    ForEach(thread.prompts) { prompt in
+                        GatewayPromptCard(prompt: prompt) { gateway.answer(prompt.id, in: conversationID, with: $0) }
+                    }
+                    if thread.busy && messages.last?.isStreaming != true && thread.prompts.isEmpty { replyingRow }
                     Color.clear.frame(height: 1).id("gateway-bottom")
                         .onAppear { atBottom = true }.onDisappear { atBottom = false }
                 }.padding(.horizontal, 20).padding(.vertical, 24)
@@ -89,6 +92,7 @@ struct GatewayChatView: View {
             .onChange(of: messages.last?.id) { _, _ in scrollToBottom(proxy) }
             .onChange(of: messages.last?.text) { _, _ in if atBottom { scrollToBottom(proxy, animated: false) } }
             .onChange(of: thread.busy) { _, _ in if atBottom { scrollToBottom(proxy) } }
+            .onChange(of: thread.prompts.count) { _, _ in scrollToBottom(proxy) }
             .onChange(of: composerFocused) { _, focused in if focused { scrollToBottom(proxy) } }
             .overlay(alignment: .bottomTrailing) {
                 if !atBottom {
@@ -144,6 +148,53 @@ struct GatewayChatView: View {
     private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool = true) {
         if animated && !reduceMotion { withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("gateway-bottom", anchor: .bottom) } }
         else { proxy.scrollTo("gateway-bottom", anchor: .bottom) }
+    }
+}
+
+/// Hermes is waiting on the person: approve or deny a command, or answer a question. It stays until answered or withdrawn.
+private struct GatewayPromptCard: View {
+    let prompt: GatewayPrompt
+    let onAnswer: (String) -> Void
+    @State private var typed = ""
+
+    private static let labels = ["once": "Approve once", "session": "Approve for this session", "always": "Always approve", "deny": "Deny"]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            switch prompt.kind {
+            case .approval(let command, let description, let choices):
+                Label("Alan needs your approval", systemImage: "exclamationmark.shield").font(.subheadline.weight(.semibold))
+                if !description.isEmpty { Text(description).font(.footnote).foregroundStyle(WorkspaceTheme.secondary) }
+                if !command.isEmpty {
+                    Text(command).font(.system(.footnote, design: .monospaced)).textSelection(.enabled)
+                        .padding(10).frame(maxWidth: .infinity, alignment: .leading)
+                        .background(WorkspaceTheme.background, in: RoundedRectangle(cornerRadius: 10))
+                }
+                ForEach(choices, id: \.self) { choice in
+                    Button(role: choice == "deny" ? .destructive : nil) { onAnswer(choice) } label: {
+                        Text(Self.labels[choice] ?? choice).frame(maxWidth: .infinity, minHeight: 30)
+                    }
+                    .buttonStyle(.bordered).accessibilityIdentifier("gatewayApproval-\(choice)")
+                }
+            case .clarify(let question, let choices):
+                Label("Alan has a question", systemImage: "questionmark.bubble").font(.subheadline.weight(.semibold))
+                Text(question).font(.callout).fixedSize(horizontal: false, vertical: true)
+                ForEach(choices, id: \.self) { choice in
+                    Button { onAnswer(choice) } label: { Text(choice).frame(maxWidth: .infinity, minHeight: 30) }.buttonStyle(.bordered)
+                }
+                HStack(spacing: 8) {
+                    TextField("Your answer", text: $typed, axis: .vertical).lineLimit(1...4)
+                        .padding(12).background(WorkspaceTheme.background, in: RoundedRectangle(cornerRadius: 12))
+                        .accessibilityIdentifier("gatewayClarifyField")
+                    Button("Send") { onAnswer(typed); typed = "" }.buttonStyle(.borderedProminent).controlSize(.large)
+                        .disabled(typed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty).accessibilityIdentifier("gatewayClarifySend")
+                }
+            }
+        }
+        .padding(15).frame(maxWidth: .infinity, alignment: .leading)
+        .background(WorkspaceTheme.surface, in: RoundedRectangle(cornerRadius: 19))
+        .overlay(RoundedRectangle(cornerRadius: 19).stroke(WorkspaceTheme.mint.opacity(0.5)))
+        .accessibilityElement(children: .contain).accessibilityIdentifier("gatewayPrompt")
     }
 }
 

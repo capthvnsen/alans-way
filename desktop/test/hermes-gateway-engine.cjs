@@ -11,7 +11,10 @@
 //
 // cfg: { epoch, sessions, ringMax=512, orphanGraceMs=20000, deltaCount=3,
 //        firstDeltaMs=0, deltaMs=0, wholeReply=false, extraRpc, mangleReplay(events),
-//        context: { used, max }, contextPerTurn=0, compressMs=0, compressTo=0.2, compressFails }
+//        context: { used, max }, contextPerTurn=0, compressMs=0, compressTo=0.2, compressFails,
+//        beforeTurn(session, text) }
+// beforeTurn: runs when a turn is admitted; a returned promise holds the reply until it settles (a turn waiting on an
+// approval or a question the way Hermes does). The hook may send server requests through session.peers[i].send.
 // wholeReply: no message.delta at all, only message.start and a message.complete that carries the text (a Hermes
 // with streaming off, as the VM is).
 // context: the context window a session reports (session.usage, message.complete.usage); absent, a session reports no
@@ -81,9 +84,14 @@ function createGatewayEngine(cfg = {}) {
   }
 
   function startTurn(s, text) {
+    s.turn = { text };
+    const hold = cfg.beforeTurn ? cfg.beforeTurn(s, text) : null;
+    if (hold) Promise.resolve(hold).then(() => { if (!closed && !s.reaped) streamTurn(s, text); }); else streamTurn(s, text);
+  }
+
+  function streamTurn(s, text) {
     const n = cfg.deltaCount ?? 3;
     const tokens = cfg.tokens ? cfg.tokens(text) : Array.from({ length: n }, (_, i) => `w${i} `);
-    s.turn = { text };
     let i = 0;
     const step = () => {
       if (i === 0) emit(s, 'message.start', {});

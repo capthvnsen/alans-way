@@ -31,6 +31,48 @@ import XCTest
         XCTAssertEqual(store.conversations.map(\.title), ["Alpha"])
     }
 
+    func testApprovingACommandAnswersHermesAndClearsTheCard() async throws {
+        let s = server.addConversation(key: "k1", title: "Alpha")
+        store.start(); await settle(); store.open("k1"); await settle()
+        server.request(s, id: "srv-1", method: "approval", params: ["command": .string("ls -la"), "description": .string("List files"), "choices": .array([.string("once"), .string("deny"), .string("bogus")])])
+        await settle()
+        let prompt = try XCTUnwrap(store.thread("k1").prompts.first)
+        XCTAssertEqual(prompt.kind, .approval(command: "ls -la", description: "List files", choices: ["once", "deny"]))
+        store.answer("srv-1", in: "k1", with: "always")          // not offered: nothing is sent
+        XCTAssertTrue(server.requestAnswers.isEmpty); XCTAssertEqual(store.thread("k1").prompts.count, 1)
+        store.answer("srv-1", in: "k1", with: "deny")
+        XCTAssertEqual(server.requestAnswers.first?.result?["choice"]?.string, "deny")
+        XCTAssertTrue(store.thread("k1").prompts.isEmpty)
+    }
+
+    func testAClarifyAnswerIsKeyedByTheQuestionIdAndAWithdrawnOneDisappears() async throws {
+        let s = server.addConversation(key: "k1", title: "Alpha")
+        store.start(); await settle(); store.open("k1"); await settle()
+        server.request(s, id: "srv-7", method: "clarify", params: ["questions": .array([.object(["qid": .string("q1"), "question": .string("Which branch?"), "choices": .array([.string("main")])])])])
+        server.request(s, id: "srv-8", method: "clarify", params: ["question": .string("Sure?")])
+        await settle()
+        XCTAssertEqual(store.thread("k1").prompts.map(\.kind), [.clarify(question: "Which branch?", choices: ["main"]), .clarify(question: "Sure?", choices: [])])
+        store.answer("srv-7", in: "k1", with: "   ")             // empty answers are not sent
+        XCTAssertTrue(server.requestAnswers.isEmpty)
+        store.answer("srv-7", in: "k1", with: " release ")
+        XCTAssertEqual(server.requestAnswers.first?.result?["answers"]?["q1"]?.string, "release")
+        server.emit(s, "request.cancel", ["id": .string("srv-8")]); await settle()
+        XCTAssertTrue(store.thread("k1").prompts.isEmpty)
+    }
+
+    func testAPromptEndsWithTheReplyAndADropSaysWhy() async throws {
+        let s = server.addConversation(key: "k1", title: "Alpha")
+        store.start(); await settle(); store.open("k1"); await settle()
+        server.request(s, id: "srv-1", method: "approval"); await settle()
+        server.complete(s, text: "done"); await settle()
+        XCTAssertTrue(store.thread("k1").prompts.isEmpty)
+        server.request(s, id: "srv-2", method: "approval"); await settle()
+        XCTAssertEqual(store.thread("k1").prompts.count, 1)
+        server.dropAll(); await settle()
+        XCTAssertTrue(store.thread("k1").prompts.isEmpty)
+        XCTAssertEqual(store.thread("k1").notice, "The connection dropped while Alan waited for your answer. Send a message to continue.")
+    }
+
     func testAWholeReplyArrivesAsOneMessageComplete() async throws {
         let s = server.addConversation(key: "k1", title: "Alpha")
         store.start(); await settle(); store.open("k1"); await settle()
