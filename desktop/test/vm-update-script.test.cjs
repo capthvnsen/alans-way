@@ -468,6 +468,7 @@ STATE="$FAKE_HERMES_STATE"
 P=default
 if [ "\${1:-}" = "-p" ]; then P="$2"; shift 2; fi
 printf 'hermes -p %s %s\\n' "$P" "$*" >> "$STATE/hermes.log"
+[ -f "$STATE/delay" ] && sleep "$(cat "$STATE/delay")"
 [ -n "\${FAKE_SVC_LOG:-}" ] && printf 'hermes -p %s %s\\n' "$P" "$*" >> "$FAKE_SVC_LOG"
 GWFILE="$STATE/gwstate"
 GWPROFILE="$GWFILE"
@@ -644,6 +645,25 @@ test('--check also reports Hermes, its update verdict, the plugin version and th
   assert.equal(result.gatewayRunning, true);
   fs.writeFileSync(path.join(state, 'gwstate'), 'stopped\n');
   assert.equal(lastJson(await runScript(['--check'], envFor(checkout, makeDataDir(port), bin, pluginEnv(home, state)))).gatewayRunning, false);
+});
+
+test('--check asks Hermes for its version, update verdict and gateway at the same time', async () => {
+  const { bin } = makeBin();
+  const state = makeHermesState();
+  addHermes(bin, state);
+  fs.writeFileSync(path.join(state, 'delay'), '1');
+  fs.writeFileSync(path.join(state, 'gwstate'), 'running\n');
+  const home = makeHermesHome();
+  addPlugin(home, 'default', 'alans-way', '0.21.0');
+  const port = await makeStatus({ version: '0.3.1', busy: false });
+  const began = Date.now();
+  const result = lastJson(await runScript(['--check'], envFor(makeCheckout(remote), makeDataDir(port), bin, pluginEnv(home, state))));
+  const took = Date.now() - began;
+  assert.equal(result.hermesVersion, 'Hermes Agent v0.21.6+12.gabc (2026.9.24) · stable');
+  assert.equal(result.hermesCheck, '✓ Already up to date.');
+  assert.equal(result.gatewayRunning, true);
+  assert.ok(took < 2800, `three one-second Hermes calls took ${took} ms; they ran one after another`);
+  assert.deepEqual(fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith('vm-update-check.')), [], 'no scratch directory is left behind');
 });
 
 test('--check without hermes reports empty Hermes fields and no gateway verdict', async () => {

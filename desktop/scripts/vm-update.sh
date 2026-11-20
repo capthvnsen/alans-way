@@ -959,9 +959,24 @@ hermes_fields() {
   HHOME="${HERMES_HOME:-$HOME/.hermes}"
   _hf_ver="" _hf_check="" _hf_gw=null _hf_plugin="" _hf_plugins=""
   if hermes_bin; then
-    _hf_ver="$(run_hermes 20 --version | sed -n '/Hermes Agent v/{p;q;}')"
-    _hf_check="$(run_hermes 45 update --check | grep -Ei 'available|up to date|no newer release' | head -3)"
-    _hf_gw_out="$(run_hermes 20 gateway status)"
+    # Three independent read-only calls, each a slow Python start (the update
+    # check also does a git fetch): run them together so the check costs the
+    # slowest, not the sum. The scratch dir is removed before this returns.
+    _hf_tmp="$(mktemp -d "${TMPDIR:-/tmp}/vm-update-check.XXXXXX")" || _hf_tmp=""
+    if [ -n "$_hf_tmp" ]; then
+      run_hermes 20 --version > "$_hf_tmp/ver" &
+      run_hermes 45 update --check > "$_hf_tmp/check" &
+      run_hermes 20 gateway status > "$_hf_tmp/gw" &
+      wait
+      _hf_ver="$(sed -n '/Hermes Agent v/{p;q;}' "$_hf_tmp/ver")"
+      _hf_check="$(grep -Ei 'available|up to date|no newer release' "$_hf_tmp/check" | head -3)"
+      _hf_gw_out="$(cat "$_hf_tmp/gw")"
+      rm -rf "$_hf_tmp"
+    else
+      _hf_ver="$(run_hermes 20 --version | sed -n '/Hermes Agent v/{p;q;}')"
+      _hf_check="$(run_hermes 45 update --check | grep -Ei 'available|up to date|no newer release' | head -3)"
+      _hf_gw_out="$(run_hermes 20 gateway status)"
+    fi
     if printf '%s' "$_hf_gw_out" | grep -qi 'gateway is running'; then _hf_gw=true
     elif printf '%s' "$_hf_gw_out" | grep -qi 'not running'; then _hf_gw=false; fi
   fi
