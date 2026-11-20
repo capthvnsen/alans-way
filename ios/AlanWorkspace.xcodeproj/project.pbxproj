@@ -14,6 +14,7 @@
 		10D5D7D23638DC1DE62F1F7B /* GatewayWireTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F333CBC839B7FBB723069538 /* GatewayWireTests.swift */; };
 		1607CCAFA3E4F15CF501B892 /* TelegramStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4695E1A2C3D735F7BAD249F6 /* TelegramStore.swift */; };
 		270D178306AC87286B87AEAF /* TelegramMiniAppView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24F2A64E9623B56C19845E75 /* TelegramMiniAppView.swift */; };
+		27C70E3BC184BAFEEC6B892C /* avatars-manifest.json in Resources */ = {isa = PBXBuildFile; fileRef = 0890BEF83C0B0E55A7ECF361 /* avatars-manifest.json */; };
 		2AC6296E685174669AEC7A6D /* AgentListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5BE46BDAF695DC941BEC5180 /* AgentListView.swift */; };
 		309F19D03DC3422BDE3A6E77 /* TelegramModelMapperTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFBF6A1C8690784EBDB03C36 /* TelegramModelMapperTests.swift */; };
 		37F6D9C152EDBD1A9C59F022 /* GatewayOutbox.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1550656785AB39CE6B78BE6F /* GatewayOutbox.swift */; };
@@ -22,6 +23,7 @@
 		4702C87B84BB4CFDF290192D /* ConversationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED9377B8855E3C402146A072 /* ConversationView.swift */; };
 		4FEC47D91487EE95C95E9D74 /* GatewayChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14CEA8DA8FC9F159500EB87F /* GatewayChatView.swift */; };
 		5551A5262C75F1E993B7FE64 /* OnboardingChecks.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF4D430361F8B365997DEB1A /* OnboardingChecks.swift */; };
+		589EA8DD5039F2DBF8798C2F /* AvatarCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7FB16B6019BE6F2C0FADA0F1 /* AvatarCatalog.swift */; };
 		5A1F4D141287CD6C515BF573 /* GatewaySessionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A4AF431B3DE03B25477443D /* GatewaySessionStore.swift */; };
 		6317311CC729AFA0418C5B7C /* GatewayMarkdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6CB6DCCC290369C17A0771D0 /* GatewayMarkdown.swift */; };
 		69469492DA5C4F4269462C58 /* GatewayLinkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 118A6E7F48E26DB4D121A3F6 /* GatewayLinkTests.swift */; };
@@ -32,6 +34,7 @@
 		7E00629AE1004A40B80A5C4E /* GatewayUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E64D280F2ED32D81F94507CB /* GatewayUITests.swift */; };
 		81DE2CA72D8707A0BDB979D2 /* CallSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 699603DAEE4B2F036A206697 /* CallSheet.swift */; };
 		89774F1637FD84C5F23D4795 /* DiagnosticsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F492AAD368CE85E91F7ACB1 /* DiagnosticsStore.swift */; };
+		89F44C70C3F051A9A0277F8C /* AgentPortrait.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A848386C55AE79414492EA3 /* AgentPortrait.swift */; };
 		908BAF57376B327D28D4B8E7 /* GatewayRemote.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9596BBB57763B692F4677455 /* GatewayRemote.swift */; };
 		957893A4511CCBEA94D1E991 /* AlanWorkspaceApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89C666E05FF981969BA6BC6B /* AlanWorkspaceApp.swift */; };
 		A394000E3BCA30523150BC45 /* WorkspaceTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96B5037979439E2A349C2237 /* WorkspaceTheme.swift */; };
@@ -39,6 +42,7 @@
 		B15AF67CC6E1EC075135350F /* GatewayLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63E0C34D0835912CE8FE07FE /* GatewayLink.swift */; };
 		B25D0469774BF4429CEE172F /* GatewayJSON.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24A2607A5D711472283F6B33 /* GatewayJSON.swift */; };
 		B54914EED6A1BB1190FD33AE /* GatewayStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71A4300902C0365B7990577F /* GatewayStoreTests.swift */; };
+		B61C15ACE58AEB5D369A50D5 /* AvatarPortraitTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D69E706B713BF20981C01EA8 /* AvatarPortraitTests.swift */; };
 		B727A0DF4C5C3F0182CDE634 /* TelegramKeychain.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14C0A4B8EE652A21485C95D /* TelegramKeychain.swift */; };
 		B9DF5A289B09B55A6D3C0D44 /* OnboardingViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A045030A237B259347E9C37 /* OnboardingViews.swift */; };
 		BC77FADCFC0B88BBEB1D68A2 /* GatewayAddress.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2233454B9BBE1146474EF81A /* GatewayAddress.swift */; };
@@ -77,6 +81,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		0890BEF83C0B0E55A7ECF361 /* avatars-manifest.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "avatars-manifest.json"; sourceTree = "<group>"; };
 		118A6E7F48E26DB4D121A3F6 /* GatewayLinkTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayLinkTests.swift; sourceTree = "<group>"; };
 		14CEA8DA8FC9F159500EB87F /* GatewayChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayChatView.swift; sourceTree = "<group>"; };
 		1550656785AB39CE6B78BE6F /* GatewayOutbox.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayOutbox.swift; sourceTree = "<group>"; };
@@ -86,6 +91,7 @@
 		24A2607A5D711472283F6B33 /* GatewayJSON.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayJSON.swift; sourceTree = "<group>"; };
 		24F2A64E9623B56C19845E75 /* TelegramMiniAppView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelegramMiniAppView.swift; sourceTree = "<group>"; };
 		28295B1173C01ABBF7FA37B4 /* CallWebContentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallWebContentTests.swift; sourceTree = "<group>"; };
+		2A848386C55AE79414492EA3 /* AgentPortrait.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentPortrait.swift; sourceTree = "<group>"; };
 		332C8F5E93C0561DBF81EA6D /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		388D4414D6FCBF28F43E6D08 /* WorkspaceRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceRootView.swift; sourceTree = "<group>"; };
 		3A4AF431B3DE03B25477443D /* GatewaySessionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewaySessionStore.swift; sourceTree = "<group>"; };
@@ -106,6 +112,7 @@
 		757F8CE9576A8AE2D81E61E8 /* ThirdPartyNotices.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = ThirdPartyNotices.txt; sourceTree = "<group>"; };
 		7B16689FE84453B992337FD4 /* GatewayOutboxTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayOutboxTests.swift; sourceTree = "<group>"; };
 		7C977EFD330E896BD84CFD26 /* TelegramModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelegramModels.swift; sourceTree = "<group>"; };
+		7FB16B6019BE6F2C0FADA0F1 /* AvatarCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AvatarCatalog.swift; sourceTree = "<group>"; };
 		811600DA355EAF826AC24E3C /* WorkspaceSettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceSettingsTests.swift; sourceTree = "<group>"; };
 		885E8694695952E1A0B21044 /* AlanWorkspaceUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = AlanWorkspaceUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		89C666E05FF981969BA6BC6B /* AlanWorkspaceApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlanWorkspaceApp.swift; sourceTree = "<group>"; };
@@ -119,6 +126,7 @@
 		9F492AAD368CE85E91F7ACB1 /* DiagnosticsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsStore.swift; sourceTree = "<group>"; };
 		AE2EED5E62249066B47417DD /* OnboardingChecksTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingChecksTests.swift; sourceTree = "<group>"; };
 		AFBF6A1C8690784EBDB03C36 /* TelegramModelMapperTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelegramModelMapperTests.swift; sourceTree = "<group>"; };
+		D69E706B713BF20981C01EA8 /* AvatarPortraitTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AvatarPortraitTests.swift; sourceTree = "<group>"; };
 		E64D280F2ED32D81F94507CB /* GatewayUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayUITests.swift; sourceTree = "<group>"; };
 		EC0F4E209C798E4B396F1D92 /* GatewayAddressTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayAddressTests.swift; sourceTree = "<group>"; };
 		ED9377B8855E3C402146A072 /* ConversationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationView.swift; sourceTree = "<group>"; };
@@ -168,6 +176,7 @@
 			isa = PBXGroup;
 			children = (
 				FC96F43107F9FE6A1832FF2E /* Assets.xcassets */,
+				0890BEF83C0B0E55A7ECF361 /* avatars-manifest.json */,
 				332C8F5E93C0561DBF81EA6D /* PrivacyInfo.xcprivacy */,
 				757F8CE9576A8AE2D81E61E8 /* ThirdPartyNotices.txt */,
 			);
@@ -177,6 +186,8 @@
 		6BCCADA69AF3C7563F4AC7D3 /* Support */ = {
 			isa = PBXGroup;
 			children = (
+				2A848386C55AE79414492EA3 /* AgentPortrait.swift */,
+				7FB16B6019BE6F2C0FADA0F1 /* AvatarCatalog.swift */,
 				9F492AAD368CE85E91F7ACB1 /* DiagnosticsStore.swift */,
 				4B20C55068C0B8BD553B95CC /* WorkspaceSettings.swift */,
 				96B5037979439E2A349C2237 /* WorkspaceTheme.swift */,
@@ -235,6 +246,7 @@
 		AC0F482DFAED5E357CE6D11B /* AlanWorkspaceTests */ = {
 			isa = PBXGroup;
 			children = (
+				D69E706B713BF20981C01EA8 /* AvatarPortraitTests.swift */,
 				4235538CCC550F10BC3EC573 /* CallOriginPolicyTests.swift */,
 				28295B1173C01ABBF7FA37B4 /* CallWebContentTests.swift */,
 				1FD3F25D86FEDD20F7A4E815 /* DiagnosticsStoreTests.swift */,
@@ -423,6 +435,7 @@
 				E94B9A8118F61B969D27223C /* Assets.xcassets in Resources */,
 				7501752E4A01B396E9FEF9D7 /* PrivacyInfo.xcprivacy in Resources */,
 				AE7AD8C33467B7C1E8D46F67 /* ThirdPartyNotices.txt in Resources */,
+				27C70E3BC184BAFEEC6B892C /* avatars-manifest.json in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -442,6 +455,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				B61C15ACE58AEB5D369A50D5 /* AvatarPortraitTests.swift in Sources */,
 				E386EEEEFB77893693F7D130 /* CallOriginPolicyTests.swift in Sources */,
 				FF1C1798B0652B7CAD923003 /* CallWebContentTests.swift in Sources */,
 				062D5F6B7025E5D125D7A716 /* DiagnosticsStoreTests.swift in Sources */,
@@ -464,7 +478,9 @@
 			buildActionMask = 2147483647;
 			files = (
 				2AC6296E685174669AEC7A6D /* AgentListView.swift in Sources */,
+				89F44C70C3F051A9A0277F8C /* AgentPortrait.swift in Sources */,
 				957893A4511CCBEA94D1E991 /* AlanWorkspaceApp.swift in Sources */,
+				589EA8DD5039F2DBF8798C2F /* AvatarCatalog.swift in Sources */,
 				81DE2CA72D8707A0BDB979D2 /* CallSheet.swift in Sources */,
 				D45FA408AD1811720A4540C6 /* ComputerView.swift in Sources */,
 				4702C87B84BB4CFDF290192D /* ConversationView.swift in Sources */,
