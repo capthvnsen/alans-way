@@ -189,7 +189,7 @@ const view = () => { v.innerHTML = '<button>Save</button>'; v.querySelector('but
 rows(); view(); addEventListener('hashchange', view);
 </script>`;
 const hopA = `<!doctype html><title>hop a</title><a href="/hop-b">Go</a> <button>Alpha</button>`;
-const hopB = `<!doctype html><title>hop b</title><button onclick="out.textContent += 'B'">Beta</button><button onclick="out.textContent += 'G'">Gamma</button><button onclick="out.textContent += 'C'">Cancel subscription</button><p id="out"></p>`;
+const hopB = `<!doctype html><title>hop b</title><button onclick="out.textContent += 'B'">Beta</button><button onclick="out.textContent += 'G'">Gamma</button><button onclick="out.textContent += 'C'">Cancel reminder</button><p id="out"></p>`;
 const crowdPage = `<!doctype html><title>crowd</title>${Array.from({ length: 2100 }, (_, i) => `<button>Item ${i}</button>`).join('')}`;
 // A checkout for the app's commit check: every way of reaching "Place order"
 // the router's review rounds found, beside look-alikes that must still work.
@@ -891,9 +891,9 @@ test('only an exact name acts; near matches come back as suggestions, and a cut-
   const tab = await openTab('/hop-b');
   const near = await act(tab, { action: 'click', name: 'Cancel' });
   assert.equal(near.status, 400);
-  assert.match(near.data.error, /No visible control is named exactly "Cancel"\. Close matches: e\d+ "Cancel subscription"/);
+  assert.match(near.data.error, /No visible control is named exactly "Cancel"\. Close matches: e\d+ "Cancel reminder"/);
   assert.equal(await pageText(tab, '#out'), '', 'a near match is never clicked');
-  const exact = await act(tab, { action: 'click', name: 'cancel  SUBSCRIPTION' });
+  const exact = await act(tab, { action: 'click', name: 'cancel  REMINDER' });
   assert.equal(exact.status, 200, 'case and spacing do not matter');
   assert.equal(await pageText(tab, '#out'), 'C');
   const crowd = await openTab('/crowd');

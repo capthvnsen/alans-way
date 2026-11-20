@@ -512,7 +512,7 @@
     const idleLabel = (ms) => { const min = Math.floor(ms / 60000); return min >= 120 ? `${Math.floor(min / 60)} h` : `${min} min`; };
     function renderChip() {
       const c = state?.compact;
-      const reason = c && !state.run && policy.shouldCompact({ usedTokens: c.usedTokens, windowTokens: c.windowTokens, idleMs: c.idleSince ? Date.now() - c.idleSince : NaN });
+      const reason = c && !state.run && policy.shouldCompact({ usedTokens: c.usedTokens, windowTokens: c.windowTokens, idleMs: c.idleSince ? Date.now() - c.idleSince : NaN, cacheTtlMs: c.cacheTtlMs });
       chip.classList.toggle('hidden', !reason);
       if (!reason) { compactOff = false; return; }
       const why = reason === 'high' ? `context ${Math.round(c.usedTokens / c.windowTokens * 100)}% full` : `chat idle ${idleLabel(Date.now() - c.idleSince)}`;

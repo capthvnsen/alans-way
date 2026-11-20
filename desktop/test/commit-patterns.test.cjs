@@ -8,9 +8,17 @@ const COMMITS = ['Place order', 'Place your order', 'Pay', 'Buy now', 'Buy-now',
   'Request to book', 'Confirm order', 'Submit order', 'Order now', 'Send', 'Post', 'Publish', 'Submit', 'Easy Apply', 'Delete', 'Subscribe', 'Donate', 'Transfer',
   'Jetzt bezahlen', 'Kauf abschließen', 'Valider la commande', 'Réserver', 'Realizar pedido', '注文を確定する',
   'Complete reservation', 'Confirm reservation', 'Confirm', 'Confirm payment', 'Make payment', 'Reply', 'Comment', 'Remove', 'Schedule Event', 'Place bid', 'Close account',
-  'Pay with Google Pay now', 'Confirm email and pay'];
+  'Pay with Google Pay now', 'Confirm email and pay',
+  'Update password', 'Change password', 'Change your email address', 'Update e-mail', 'Cancel subscription', 'Cancel your membership', 'Cancel order',
+  'Withdraw', 'Cash out', 'Wire funds', 'Transferir', 'Überweisen', 'Virement', '送金', '出金',
+  'Disable 2FA', 'Turn off two-factor', 'Turn off two-factor authentication', 'Disable two-step verification', 'Deactivate account', 'Close my account',
+  'Revoke access', 'Checkout', 'Secure checkout', 'Unsubscribe', 'Start free trial', 'Start your 14-day free trial', 'Approve',
+  'Passwort ändern', 'Changer le mot de passe', 'Cancelar suscripción', 'Cerrar la cuenta', 'Konto schließen', '注文を確定', 'パスワードを変更', '解約', '退会'];
 const LOOK_ALIKES = ['Add to cart', 'Send code', 'Send me a verification code', 'Pay with Google Pay', 'Pay with PayPal', 'Purchase history', 'Delete filter', 'Remove filter', 'Brand filter, remove',
-  'Confirm email', 'Confirm password', 'Confirm your e-mail address', 'Address book', 'Comments', 'Replies', 'Booking details', 'Buy it again', 'Book a demo', 'Subscribe & Save', 'Subscribe and save', 'Cancel subscription', 'Repay', 'Sendung verfolgen'];
+  'Confirm email', 'Confirm password', 'Confirm your e-mail address', 'Address book', 'Comments', 'Replies', 'Booking details', 'Buy it again', 'Book a demo', 'Subscribe & Save', 'Subscribe and save', 'Repay', 'Sendung verfolgen',
+  'Cancel', 'Close', 'Order history', 'Approved', 'Approval', 'Unsubscribed', 'Withdrawals', 'Wireless', 'Continue to checkout', 'Proceed to checkout', 'Go to checkout',
+  'Free trial', 'Forgot password', 'Password', 'Two-factor authentication', 'Turn off notifications', 'Deactivated users', 'Cancelar', 'Annuler', 'Abbrechen',
+  'Sign up', 'Invite', 'Share', 'Upgrade', 'Install', 'Allow', 'Apply now'];
 const EXACT_EXCEPTIONS = ['  BUY IT AGAIN\t', 'buy-it-again', 'buy_it_again', 'Buy\u00a0it\u2003again',
   '\tBOOK A DEMO  ', 'book-a-demo', 'subscribe-&-save', '  SUBSCRIBE_AND_SAVE\n', 'Subscribe\u202fand\u3000save'];
 const ADVERSE_EXCEPTIONS = ['Buy it again now', 'Buy it again2', 'Buy it agains', 'Instant Buy it again',
@@ -92,12 +100,20 @@ test('the commit name list is the one the router was given', () => {
     'place order', 'place your order', 'complete order', 'order now', 'purchase', 'buy',
     'pay(?:ment)?', 'confirm', 'book', 'complete booking', 'reserv(?:e|ation)', 'send',
     'post', 'publish', 'reply', 'comment', 'submit', 'easy apply',
-    'delete', 'remove', 'close account', 'subscribe', 'donate', 'transfer',
+    'delete', 'remove', 'close (?:your |my )?account', 'subscribe', 'donate', 'transfer',
+    '(?:update|change) (?:your |my )?password', '(?:update|change) (?:your |my )?(?:primary )?e[\\s_-]?mail', 'withdraw', 'cash(?: )?out', 'wire',
+    'cancel (?:your |my )?(?:subscription|membership|plan|account|order|booking)', 'unsubscribe', 'deactivate',
+    '(?:disable|turn off) (?:your |my )?(?:2fa|mfa|(?:two|2)[\\s_-]?(?:factor|step)|multi[\\s_-]?factor)', 'revoke', 'checkout',
+    'start (?:your |my )?(?:\\d+[\\s_-]?(?:day|month)s?[\\s_-]+)?(?:free[\\s_-]+)?trial', 'approve',
     'schedule', 'bid', 'bestellen', 'kauf abschlie(?:ß|ss)en', 'kaufen', 'bezahlen',
     'buchen', 'reservieren', 'bestellung abschicken', 'senden', 'löschen', 'commander',
     'payer', 'valider (?:la|votre) commande', 'confirmer', 'réserver', 'réservation', 'passer la commande',
     'acheter', 'envoyer', 'supprimer', 'comprar', 'pagar', 'reservar',
     'finalizar compra', 'enviar', 'eliminar', 'realizar pedido', 'confirmar',
+    'transferir', 'überweisen', 'virement', 'virer', 'passwort (?:ändern|aktualisieren)', '(?:changer|modifier) (?:le |votre )?mot de passe',
+    'cambiar (?:la |tu )?contraseña', '(?:abo|abonnement|vertrag) kündigen', 'résilier', 'désabonner', 'cancelar (?:suscripción|suscripcion|cuenta|pedido)',
+    '(?:fermer|désactiver) (?:le |mon |votre )?compte', 'konto (?:schließen|deaktivieren)', 'cerrar (?:la |tu )?cuenta', 'auszahlen', 'retirer (?:les |mes )?fonds',
+    'retirar fondos', 'widerrufen', 'révoquer', 'revocar', 'genehmigen', 'approuver', 'aprobar',
   ]);
   assert.equal(COMMIT_PATTERNS.notCommit.length, 14);
   assert.deepEqual(COMMIT_PATTERNS.notCommit.slice(-3), [
