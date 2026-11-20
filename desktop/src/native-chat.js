@@ -285,9 +285,16 @@
       body.append(copy);
       row.append(body);
       if (m.state === 'sending') row.append(el('div', 'nc-meta', 'Sending…'));
+      // Plain text plus real buttons inside the log region, which a screen reader announces politely; the label says which message.
+      const act = (label, name) => { const b = button('nc-link', label, () => command(name, { sessionId: state.activeId, localId: m.id })); b.setAttribute('aria-label', `${label} message: ${m.text.slice(0, 40)}`); return b; };
+      if (m.state === 'queued') {
+        const meta = el('div', 'nc-meta', 'Waiting to send. ');
+        meta.append(act('Cancel', 'cancel'));
+        row.append(meta);
+      }
       if (m.state === 'failed') {
         const meta = el('div', 'nc-meta failed', 'Not sent. ');
-        meta.append(button('nc-link', 'Retry', () => command('retry', { sessionId: state.activeId, localId: m.id })));
+        meta.append(act('Retry', 'retry'), document.createTextNode(' '), act('Delete', 'cancel'));
         row.append(meta);
       }
       return row;
@@ -495,7 +502,7 @@
     }
 
     // A short blip stays silent: reconnecting and catching up show after 3 s.
-    const LINK_TEXT = { reconnecting: 'Reconnecting…', syncing: 'Catching up…', offline: 'Offline. Messages cannot be sent.', signin: 'Sign in to Hermes again.' };
+    const LINK_TEXT = { reconnecting: 'Reconnecting…', syncing: 'Catching up…', offline: 'Offline. Messages wait here and send when you are back.', signin: 'Sign in to Hermes again.', refused: 'This Hermes address is not allowed. Messages wait here.' };
     let linkTimer;
     function renderLink() {
       clearTimeout(linkTimer);

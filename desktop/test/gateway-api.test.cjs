@@ -101,16 +101,40 @@ test('a gap with no reply running reloads the thread quietly', async () => {
   assert.equal(chat.getState().thread.notice, '');
 });
 
-test('link state shows in getState; a send while the link is down fails like a dropped request', async () => {
+test('link state shows in getState; a send while the link is down waits and goes when it is live again', async () => {
   const { chat, link } = rig();
   assert.equal(chat.getState().link.state, 'live');
   link.setState('reconnecting');
   assert.equal(chat.getState().link.state, 'reconnecting');
   await chat.command('send', { sessionId: 'api_1', text: 'hi' });
-  await until(() => chat.getState().thread.messages.some((m) => m.state === 'failed'), 'the send to fail');
-  const state = chat.getState();
-  assert.deepEqual(state.thread.messages.map((m) => m.state), ['failed']);
-  assert.equal(state.thread.notice, 'That message was not sent.');
+  await tick(20);
+  assert.deepEqual(chat.getState().thread.messages.map((m) => m.state), ['queued']);
+  assert.equal(link.sent, undefined, 'nothing was written to the dead link');
+  link.setState('live');
+  await until(() => link.sent?.length === 1, 'the queued send to go once the link is live');
+  assert.deepEqual(link.sent, [['api_1', 'hi']]);
+});
+
+test('every link state that cannot send queues; idle and stopped (no gateway) use REST', async () => {
+  for (const state of ['connecting', 'reconnecting', 'syncing', 'offline', 'suspended', 'signin', 'refused']) {
+    const { chat, link, sse } = rig({ linkState: state });
+    await chat.command('send', { sessionId: 'api_1', text: 'hi' });
+    await tick(10);
+    assert.deepEqual(chat.getState().thread.messages.map((m) => m.state), ['queued'], state);
+    assert.deepEqual([link.sent, sse], [undefined, []], state);
+  }
+  const { chat, sse } = rig({ linkState: 'idle' });
+  await chat.command('send', { sessionId: 'api_1', text: 'hi' });
+  await until(() => sse.length === 1, 'the REST send');
+});
+
+test('the client message id rides on prompt.submit', async () => {
+  const { chat, link } = rig();
+  let opts;
+  link.submit = async (id, text, o) => { opts = o; return { status: 'streaming' }; };
+  await chat.command('send', { sessionId: 'api_1', text: 'hi' });
+  await until(() => opts, 'the submit');
+  assert.match(opts.clientMessageId, /^[\w-]{8,64}$/);
 });
 
 test('approval and clarify arrive as requests; answers go back through the link', async () => {

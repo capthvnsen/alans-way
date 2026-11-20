@@ -110,7 +110,7 @@ function createHermesApi({ baseUrl, key, profile = '', timeoutMs = 15000, idleMs
 
   // No overall timeout on a live reply; 45 s without a single byte (keepalives
   // included) counts as a dropped stream.
-  async function streamChat(sessionId, input, { onEvent = () => {}, signal } = {}) {
+  async function streamChat(sessionId, input, { onEvent = () => {}, signal, clientMessageId } = {}) {
     const local = new AbortController();
     const abort = () => local.abort();
     signal?.addEventListener('abort', abort, { once: true });
@@ -118,7 +118,7 @@ function createHermesApi({ baseUrl, key, profile = '', timeoutMs = 15000, idleMs
     const arm = () => { clearTimeout(idle); idle = setTimeout(() => { dropped = true; local.abort(); }, idleMs); };
     try {
       arm();
-      const res = await send('POST', `/api/sessions/${enc(sessionId)}/chat/stream`, { input }, local.signal);
+      const res = await send('POST', `/api/sessions/${enc(sessionId)}/chat/stream`, { input, ...(clientMessageId ? { client_message_id: clientMessageId } : {}) }, local.signal);
       if (res.statusCode !== 200) throw await failure(res);
       res.setEncoding('utf8');
       const feed = createSseParser(onEvent);

@@ -91,16 +91,16 @@ test('send: optimistic bubble, streamed reply, reconcile with the server, read-o
   await assert.rejects(chat.command('nope'), /Unknown/);
 });
 
-test('a send that never starts is marked failed and can be retried', async () => {
+test('a send Hermes refuses for good is marked failed and can be retried', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'native-chat-'));
   let attempts = 0;
-  const api = fakeApi({ streamChat: async () => { attempts++; const e = new Error("Can't reach Hermes."); e.code = 'unreachable'; throw e; } });
+  const api = fakeApi({ streamChat: async () => { attempts++; const e = new Error('Unprocessable'); e.code = 'http_422'; throw e; } });
   const chat = createNativeChat({ dir, apiFactory: () => api, loadConfig: () => ({ baseUrl: 'http://127.0.0.1:8642', key: 'k'.repeat(20), lastSessionId: 'api_1' }) });
   await chat.command('send', { sessionId: 'api_1', text: 'hi' });
   await tick();
   const failed = chat.getState().thread.messages[0];
   assert.equal(failed.state, 'failed');
-  assert.equal(chat.getState().status, 'unreachable');
+  assert.equal(chat.getState().status, 'error');
   await chat.command('retry', { sessionId: 'api_1', localId: failed.id });
   await tick();
   assert.equal(attempts, 2);

@@ -6,12 +6,14 @@
 //
 // While the link is not configured at all (no gateway address or sign-in), a
 // send falls through to the REST+SSE path, which stays the fallback. While the
-// link IS configured but not live, a send fails exactly as a dropped request
-// does today: there is no queue in this version.
+// link IS configured but not live, `sendReady()` is false and native chat's send
+// queue holds the message until the link is back.
 const { ApiError } = require('./hermes-api.cjs');
 
 const RUN_PREFIX = 'ws:';
 const GIVE_UP_MS = 120000;
+// Link states in which a send waits in native chat's queue; idle and stopped (no gateway) fall through to REST.
+const HOLD_STATES = new Set(['connecting', 'reconnecting', 'syncing', 'offline', 'suspended', 'signin', 'refused']);
 const str = (v, max = 4000) => typeof v === 'string' ? v.slice(0, max) : '';
 const isPlainObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
 
@@ -27,8 +29,8 @@ function createGatewayApi({ rest, link, transport = () => 'websocket' }) {
   const idOf = (runId) => String(runId).split(':').slice(1, -1).join(':');
   const usable = () => transport() !== 'sse' && !['idle', 'refused', 'stopped'].includes(link.getState().state);
 
-  async function streamChat(sessionId, text, { onEvent = () => {}, signal } = {}) {
-    if (!usable()) return rest.streamChat(sessionId, text, { onEvent, signal });
+  async function streamChat(sessionId, text, { onEvent = () => {}, signal, clientMessageId } = {}) {
+    if (!usable()) return rest.streamChat(sessionId, text, { onEvent, signal, clientMessageId });
     if (signal?.aborted) throw new ApiError('aborted', 'Stopped.');
     const runId = `${RUN_PREFIX}${sessionId}:${++runCounter}`;
     let started = false, finished = false, cleaned = false, giveUp = null;
@@ -90,7 +92,7 @@ function createGatewayApi({ rest, link, transport = () => 'websocket' }) {
     signal?.addEventListener('abort', onAbort, { once: true });
     done.catch(() => {});
     try {
-      await link.submit(sessionId, text);
+      await link.submit(sessionId, text, { clientMessageId });
     } catch (e) {
       end(); // not a stream failure: the send itself
       throw submitError(e);
@@ -110,6 +112,8 @@ function createGatewayApi({ rest, link, transport = () => 'websocket' }) {
     getMessages: (...a) => rest.getMessages(...a),
     forkSession: (...a) => rest.forkSession(...a),
     streamChat,
+    // False while a WebSocket send cannot go: the caller queues the message instead of trying.
+    sendReady: () => transport() === 'sse' || !HOLD_STATES.has(link.getState().state),
     // The WebSocket has no run object to poll: clarify arrives as a request event.
     getRun: async (runId) => String(runId).startsWith(RUN_PREFIX) ? { pending_controls: [] } : rest.getRun(runId),
     stopRun: async (runId) => {

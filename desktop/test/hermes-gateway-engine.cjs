@@ -120,7 +120,7 @@ function createGatewayEngine(cfg = {}) {
         const s = live.get(params.session_id);
         if (!s) return { error: { code: 4001, message: 'unknown session' } };
         if (s.turn) return { error: { code: 4090, message: 'Nothing was sent: a reply is still running' } };
-        submits.push({ sessionId: s.id, text: String(params.text), at: Date.now() });
+        submits.push({ sessionId: s.id, text: String(params.text), clientMessageId: params.client_message_id, at: Date.now() });
         const userRow = { id: ++rowSeq, role: 'user', content: String(params.text), timestamp: nowSec() };
         storedFor(s.session_key).messages.push(userRow);
         startTurn(s, String(params.text));
