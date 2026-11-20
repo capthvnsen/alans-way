@@ -52,6 +52,7 @@ const { createSitePermissions } = require('./site-permissions.cjs');
 const { screenshotClip } = require('./cdp.cjs');
 const { listReadExpression, cachedSnapshot, settleSnapshot, readEffect, passCloudflare, challengeProbeExpression, checkpointExpression, restoreExpression, followUpInstallExpression, lastReadOf } = require('./browser-page.cjs');
 const { createTerminals } = require('./terminal.cjs');
+const { createSignInGate } = require('./sign-in-gate.cjs');
 const { brokerTarget, createVpsBrowser, backoffDelay, toCdpCookie, toElectronCookies, isTailnetHost, resolveSshHostname, createMirrorPusher, prepareMirrorTabs, settleWithin, checkScriptPath } = require('./vps-browser.cjs');
 const { createBrowserSessionStore } = require('./browser-session.cjs');
 const { createDownloadStore } = require('./download-store.cjs');
@@ -1113,7 +1114,7 @@ function createTab({ url = 'about:blank', filePath = '', openerId = '', botId = 
   view.webContents.on('destroyed', () => { if (!isQuitting && tabs.has(tab.id) && !tab.host?.isDestroyed()) closeTab(tab.id); });
   if (activate) { prefs.remoteControl = false; activeTabId = tab.id; canvasTab = 'browser'; }
   applyLayout(); broadcast();
-  if (!skipLoad) view.webContents.loadURL(targetUrl).catch(() => {});
+  if (!skipLoad) signInGate.load(view.webContents, targetUrl, { alive: () => tabs.has(tab.id) });
   savePreferencesSoon();
   return tab;
 }
@@ -1552,7 +1553,7 @@ async function openTelegramHash(hash) {
   const read = () => wc.executeJavaScript(`(document.querySelector('#MiddleColumn .MiddleHeader')?.textContent || '') + '|' + !!document.querySelector('#MiddleColumn .Composer')`);
   // The baseline read goes out before the navigation so it sees the old chat.
   watchChange({ read, delayMs: 1500, onStuck: () => { if (!wc.isDestroyed() && wc.getURL() === target) wc.reload(); } });
-  await wc.loadURL(target).catch(() => {});
+  await signInGate.load(wc, target, { alive: () => telegramView?.webContents === wc });
 }
 // The guest script narrates phases ("Updating agent plugins…"); fold them
 // into the VM's detail line so the popup shows what it is doing.
@@ -1619,7 +1620,10 @@ const checkVersionsWhenIdle = () => {
   checkVmVersions().catch((error) => logError('vm-check', error));
 };
 const webappSignIn = createWebappSignIn({ safeStorage, getPreferences: () => prefs, savePreferences: () => persistSettingsPreferences(prefs) });
-const browserSessionStore = createBrowserSessionStore({ WebContentsView, safeStorage, getPreferences: () => prefs, savePreferences: () => persistSettingsPreferences(prefs) });
+// Every page load that needs restored sign-ins (persist:browser, persist:telegram) goes through signInGate; the window does not.
+const signInGate = createSignInGate({ settleWithin, capMs: BROWSER_RESTORE_WAIT_MS, onError: () => logError('browser-restore', new Error('Saved browser sign-ins could not be restored.')),
+  onTaskError: error => logError('sign-in-gate', error), isQuitting: () => isQuitting });
+const browserSessionStore = createBrowserSessionStore({ WebContentsView, safeStorage, getPreferences: () => prefs, savePreferences: () => persistSettingsPreferences(prefs), mark: bootTimer.mark });
 async function saveBrowserSession() {
   savePreferences();
   await Promise.all(['persist:browser', 'persist:telegram', ...(webappView || canvasView ? [WEBAPP_PARTITION] : [])].map(async partition => {
@@ -2212,7 +2216,7 @@ function registerIpc() {
       }
       case 'navigate': {
         if (isVpsTab(value.id)) { await navigateVps(value.id,value.url); break; }
-        const tab = tabs.get(value.id); if (tab) { changeController(tab.id, 'human'); const target = pageUrl(value.url); tab.requestedUrl = target; await tab.view.webContents.loadURL(target).catch(() => {}); } break;
+        const tab = tabs.get(value.id); if (tab) { changeController(tab.id, 'human'); const target = pageUrl(value.url); tab.requestedUrl = target; await signInGate.load(tab.view.webContents, target, { alive: () => tabs.has(tab.id) }); } break;
       }
       case 'history': {
         if (isVpsTab(value.id)) { await remoteRequest(value.id,'control',{controller:'human'}); await remoteRequest(value.id,'human-actions',{action:value.action}); break; }
@@ -3881,7 +3885,8 @@ function createWindow() {
   bootTimer.mark('window-created');
   win.webContents.once('did-finish-load', () => { bootTimer.mark('first-paint'); ensureRemoteView(); });
   if (shownCanvas() === 'screen') ensureRemoteView();
-  telegramView.webContents.loadURL(prefs.selectedBotId ? `${TELEGRAM}#${prefs.selectedBotId}` : TELEGRAM).catch(() => {});
+  const telegramContents = telegramView.webContents;
+  signInGate.load(telegramContents, () => prefs.selectedBotId ? `${TELEGRAM}#${prefs.selectedBotId}` : TELEGRAM, { alive: () => telegramView?.webContents === telegramContents });
   restoreBrowserTabs();
   pdfWindowReady = true;
   for (const file of pendingPdfs.splice(0)) receivePdf(file);
@@ -3904,7 +3909,7 @@ function createWindow() {
     if (name !== 'focus' && (prefs?.vpsBrowser?.brokerSshHost || prefs?.vpsBrowser?.sshHost)) refreshVpsTabs();
   });
   buildMenu();
-  startApi();
+  signInGate.after(startApi);
   // Read the real pointer position, even over native child views or another app.
   // Sends only on movement, slows when still, and pauses while hidden.
   pointerFeed = createPointerFeed({
@@ -4051,8 +4056,8 @@ else {
     try { parseRemoteUrl(prefs.remoteUrl); } catch { logError('viewer-policy', new Error('Saved viewer is paused; update its address in Settings. The saved address is preserved.')); }
     fs.mkdirSync(app.getPath('userData'), { recursive: true });
     const browserSession = session.fromPartition('persist:browser');
-    // A keychain prompt nobody answers must not hold back the window and the connector API: the restore keeps going in the background.
-    await settleWithin(browserSessionStore.restore().catch(() => logError('browser-restore', new Error('Saved browser sign-ins could not be restored.'))), BROWSER_RESTORE_WAIT_MS);
+    // A keychain prompt nobody answers must not hold back the window: the restore runs in the background and only page loads wait for it (capped).
+    signInGate.start(() => browserSessionStore.restore());
     const saveCookiesSoon = coalesce(() => browserSessionStore.save().catch(() => logError('browser-save', new Error('Browser sign-ins could not be saved.'))), 250);
     for (const partition of ['persist:browser', 'persist:telegram']) session.fromPartition(partition).cookies.on('changed', saveCookiesSoon);
     for (const target of [session.defaultSession, browserSession, session.fromPartition('persist:telegram')]) {
@@ -4157,7 +4162,7 @@ else {
       canInstall: frame => [...tabs.values()].some(tab => tab.id === shownTabId() && tab.controller === 'human' && tab.view.webContents.mainFrame === frame && !layout.obscured) });
     // The rest of the boot tail must not hang on, or die with, the extension store.
     // Bounded too: a store that never answers would otherwise keep the update and Hermes Desktop checks from ever starting.
-    await Promise.race([(async () => { await extensionStore.installStore(); await extensionStore.restore(); })().catch(error => logError('extensions', error)).then(broadcast),
+    await Promise.race([(async () => { await signInGate.ready(); if (isQuitting) return; await extensionStore.installStore(); await extensionStore.restore(); })().catch(error => logError('extensions', error)).then(broadcast),
       new Promise(resolve => setTimeout(resolve, 10000).unref())]);
     broadcast();
     seedMacSshHost();

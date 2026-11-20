@@ -3,19 +3,20 @@
 const PARTITIONS = ['persist:browser', 'persist:telegram'];
 
 // Electron persists expiring cookies itself, but drops session-only cookies.
-function createBrowserSessionStore({ WebContentsView, safeStorage, getPreferences, savePreferences }) {
+function createBrowserSessionStore({ WebContentsView, safeStorage, getPreferences, savePreferences, mark = () => {} }) {
   let pending = Promise.resolve();
   // Only async keychain calls: on macOS even the sync availability check reads the keychain,
   // blocking the main process for as long as a keychain prompt stays open.
   const secure = async () => await safeStorage.isAsyncEncryptionAvailable()
     && (process.platform !== 'linux' || safeStorage.getSelectedStorageBackend() !== 'basic_text');
 
-  async function command(partition, method, params) {
+  async function command(partition, method, params, step) {
     // Electron's Cookie API drops partition keys. A private, unloaded view
     // keeps Chromium's cookie isolation metadata intact without touching tabs.
     const view = new WebContentsView({ webPreferences: { partition, sandbox: true } });
     try {
       view.webContents.debugger.attach('1.3');
+      if (step) mark(`${step}-attached`);
       return await view.webContents.debugger.sendCommand(method, params);
     } finally { view.webContents.destroy(); }
   }
@@ -40,10 +41,15 @@ function createBrowserSessionStore({ WebContentsView, safeStorage, getPreference
     return pending;
   }
 
-  async function restore() {
+  // Each mark prints only under HERMES_WORKSPACE_PROFILE_BOOT=1, so a real launch shows which step is slow.
+  async function restoreCookies() {
     const saved = getPreferences()?.sessionCookies;
-    if (!saved || !(await secure())) return;
+    if (!saved) return;
+    mark('restore-start');
+    if (!(await secure())) return;
+    mark('restore-keychain-available');
     const records = JSON.parse((await safeStorage.decryptStringAsync(Buffer.from(saved, 'base64'))).result);
+    mark('restore-decrypted');
     for (const partition of PARTITIONS) {
       if (!Array.isArray(records[partition])) continue;
       const cookies = records[partition].filter(cookie => cookie.session === true && !cookie.partitionKeyOpaque && typeof cookie.domain === 'string').map(cookie => {
@@ -52,8 +58,15 @@ function createBrowserSessionStore({ WebContentsView, safeStorage, getPreference
         const url = `${cookie.secure ? 'https' : 'http'}://${cookie.domain.replace(/^\./, '')}${cookie.path || '/'}`;
         return { ...details, url };
       });
-      if (cookies.length) await command(partition, 'Network.setCookies', { cookies });
+      const step = `restore-${partition.replace('persist:', '')}`;
+      if (cookies.length) { await command(partition, 'Network.setCookies', { cookies }, step); mark(`${step}-set`); }
     }
+    mark('restore-done');
+  }
+
+  // Restore runs in the background while the app is already up; a save queued behind it would otherwise store half the sign-ins.
+  function restore() {
+    return pending = pending.catch(() => {}).then(restoreCookies);
   }
 
   return { save, restore };
