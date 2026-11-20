@@ -2,6 +2,7 @@ const api = window.workspace;
 const hermesApi = window.hermes || null;
 let hermesView = null, nativeView = null;
 let latestUiStateRevision = -1;
+let chatMenu = { gateways: [], pages: false, unread: [] };
 let state, lastRecording = null, resumeToasts = new Set(), stoppedRecordingAt = 0, draggingBot = '', focusMode = false, modalOpen = false, resizeFrame, toastTimer, botListSignature = '', handoffBusy = false;
 const $ = (id) => document.getElementById(id);
 function element(tag, className, text) { const el = document.createElement(tag); if (className) el.className = className; if (text !== undefined) el.textContent = text; return el; }
@@ -27,23 +28,35 @@ function colorFor(value) {
   return colors[Array.from(value).reduce((sum, letter) => sum + letter.charCodeAt(0), 0) % colors.length];
 }
 const SURFACE_OF = { telegram: 'telegram', webapp: 'hermes-desktop', native: 'native' };
-// Section headers are logos only; each carries its name for assistive technology.
+// Gateway logos, each carrying its name for assistive technology where it stands alone.
 const GATEWAY_LOGOS = {
   telegram: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.6 4.3 3.7 10.8c-.8.3-.8 1.4 0 1.7l4.3 1.6 1.7 5.2c.2.7 1.1.9 1.6.4l2.4-2.3 4.4 3.2c.6.4 1.4.1 1.6-.6L22.1 5.5c.2-.9-.7-1.5-1.5-1.2ZM8 14.1 20.2 6.6"/></svg>',
   'hermes-desktop': '<img src="../assets/hermes-icon.png" alt="">',
-  // The Alan's Way mark: the two slanted bars of the browser home page.
-  native: '<svg viewBox="0 0 24 24" aria-hidden="true"><g transform="rotate(-24 12 12)" fill="currentColor" stroke="none"><rect x="7.4" y="4.5" width="3.3" height="15" rx="1.65"/><rect x="13.3" y="4.5" width="3.3" height="15" rx="1.65"/></g></svg>',
+  native: '<img src="../assets/alans-way-logo-64.png" alt="">',
 };
+const unreadOrder = window.GatewayList.createUnreadOrder();
+// Unread per gateway: Telegram's count and the native conversation's flag. Hermes Desktop exposes none.
+const unreadOn = (id, bot, gateway, inbox) => inbox[id]?.rows?.[gateway]?.unread ?? (gateway === 'telegram' && !!bot?.unread);
+// Stacked chips, oldest first so the most recent paints on top; the name is the screen reader's text.
+function fillChips(chips, ids) {
+  chips.replaceChildren(); chips.classList.toggle('hidden', !ids.length);
+  if (!ids.length) { chips.removeAttribute('role'); chips.removeAttribute('aria-label'); chips.removeAttribute('title'); return chips; }
+  const label = window.GatewayList.unreadLabel(ids);
+  chips.setAttribute('role', 'img'); chips.setAttribute('aria-label', label); chips.title = label;
+  for (const id of ids) { const chip = element('span', 'gateway-chip'); chip.dataset.gateway = id; chip.innerHTML = GATEWAY_LOGOS[id]; chips.append(chip); }
+  return chips;
+}
+// The gateway on screen for a bot: the open bot's pane, else the one it remembers.
+const shownGateway = (id) => (id === (state.chatBotId ?? state.selectedBotId) && SURFACE_OF[state.chatTarget]) || state.inbox?.[id]?.surface;
 function renderBots() {
   const list = $('bot-list'), focused = document.activeElement.closest('.bot-row');
   // Capture ownership before a zero-result filter can hide and blur the list.
-  const focusedKey = focused?.dataset.rowKey, focusedHide = !!focused && document.activeElement.classList.contains('bot-hide');
-  const rowsNow = () => [...list.querySelectorAll('.bot-row')], previousKeys = rowsNow().map(row => row.dataset.rowKey), focusedIndex = previousKeys.indexOf(focusedKey);
+  const focusedKey = focused?.dataset.botId, focusedHide = !!focused && document.activeElement.classList.contains('bot-hide');
+  const rowsNow = () => [...list.querySelectorAll('.bot-row')], previousKeys = rowsNow().map(row => row.dataset.botId), focusedIndex = previousKeys.indexOf(focusedKey);
   const search = $('bot-search').value.trim(), selectedId = state.chatBotId ?? state.selectedBotId, inbox = state.inbox || {};
   const visibleBots = state.hermesBot && !state.bots.length ? [state.hermesBot] : orderedBots();
   const gateways = Object.fromEntries(Object.entries(inbox).map(([id, flags]) => [id, flags.gateways]).filter(([, value]) => value));
-  const { sections, count, found } = window.GatewayList.gatewaySections({ bots: visibleBots, gateways, search });
-  const rows = sections.flatMap(section => section.rows);
+  const { rows, count, found } = window.GatewayList.botRows({ bots: visibleBots, gateways, search });
   list.classList.toggle('hidden', !!search && !found);
   $('bot-search-clear').classList.toggle('hidden', !search);
   $('bot-search-empty').classList.toggle('hidden', !search || found > 0);
@@ -51,35 +64,25 @@ function renderBots() {
   list.setAttribute('aria-label', `Your agents (${count})`);
   $('empty-bots').classList.toggle('hidden', !!search || state.bots.length > 0 || !!state.hermesBot);
   $('empty-bots').querySelector('p').textContent = state.telegramStatus === 'connected' ? 'Finding your Telegram bot chats…' : 'Sign in to Telegram to load your bot chats here.';
-  // One row is selected: the open bot on the gateway on screen.
-  const shown = SURFACE_OF[state.chatTarget] || inbox[selectedId]?.surface, ownRows = rows.filter(row => row.bot.id === selectedId);
-  const selected = ownRows.find(row => row.gateway === shown) || ownRows.find(row => row.gateway === inbox[selectedId]?.surface) || ownRows[0];
-  const keyOf = (row) => `${row.bot.id}:${row.gateway}`, selectedKey = selected && keyOf(selected);
-  const signature = JSON.stringify([sections.map(({ id, rows }) => [id, rows.map(({ bot }) => { const { activity, ...rest } = bot; return rest; })]), selectedKey, state.primaryBotId, state.botSort, inbox, state.webappStatus === 'unreachable']);
+  const selectedKey = rows.some(row => row.bot.id === selectedId) ? selectedId : undefined;
+  const signature = JSON.stringify([rows.map(({ bot, gateways }) => { const { activity, ...rest } = bot; return [gateways, rest]; }), selectedKey, shownGateway(selectedId), state.primaryBotId, state.botSort, inbox, state.webappStatus === 'unreachable']);
   if (signature === botListSignature) {
     for (const row of rowsNow()) {
-      const bot = rows.find(item => keyOf(item) === row.dataset.rowKey)?.bot;
+      const bot = rows.find(item => item.bot.id === row.dataset.botId)?.bot;
       if (bot) { window.HermesAvatars.paint(row.querySelector('.avatar'), bot, state); renderBotActivity(row, bot); }
     }
     document.querySelectorAll('.bridge-dot').forEach((dot) => dot.classList.toggle('offline', !state.api.ready));
     return;
   }
-  const remainingKeys = new Set(rows.map(keyOf));
+  const remainingKeys = new Set(rows.map(row => row.bot.id));
   // Continue at the next surviving neighbor; at the end, use the previous one.
   const focusKey = remainingKeys.has(focusedKey) ? focusedKey : previousKeys.slice(focusedIndex + 1).find(key => remainingKeys.has(key))
-    || previousKeys.slice(0, focusedIndex).reverse().find(key => remainingKeys.has(key)) || (rows[0] && keyOf(rows[0]));
-  const entryKey = focusedKey ? focusKey : selectedKey || (rows[0] && keyOf(rows[0]));
+    || previousKeys.slice(0, focusedIndex).reverse().find(key => remainingKeys.has(key)) || rows[0]?.bot.id;
+  const entryKey = focusedKey ? focusKey : selectedKey || rows[0]?.bot.id;
   botListSignature = signature; list.replaceChildren();
-  for (const section of sections) {
-    const group = element('div', 'gateway-section'), head = element('h3', 'gateway-head'), logo = element('span', 'gateway-logo');
-    head.id = `gateway-${section.id}`; group.setAttribute('role', 'group'); group.setAttribute('aria-labelledby', head.id);
-    logo.setAttribute('role', 'img'); logo.setAttribute('aria-label', section.label); logo.title = section.label; logo.dataset.gateway = section.id; logo.innerHTML = GATEWAY_LOGOS[section.id];
-    head.append(logo); group.append(head);
-    const items = element('div', 'gateway-rows'); items.setAttribute('role', 'list'); group.append(items); list.append(group);
-    for (const entry of section.rows) renderBotRow(items, entry, { inbox, selectedKey, entryKey, keyOf, list });
-  }
+  for (const entry of rows) renderBotRow(list, entry, { inbox, selectedKey, entryKey, list });
   if (focusedKey) {
-    const target = rowsNow().find(row => row.dataset.rowKey === focusKey);
+    const target = rowsNow().find(row => row.dataset.botId === focusKey);
     if (target && canFocus(target.querySelector('.bot-open'))) {
       // Focusing Open aligns the roving stops before restoring the control that had focus.
       target.querySelector('.bot-open').focus({ preventScroll: true });
@@ -93,32 +96,36 @@ function renderBots() {
   $('sort-bots').classList.toggle('active', (state.botSort || 'manual') !== 'manual');
   document.querySelectorAll('.bridge-dot').forEach((dot) => dot.classList.toggle('offline', !state.api.ready));
 }
-// One row: a bot on one gateway. Its text, unread dot and activity are that gateway's own.
-function renderBotRow(parent, { bot, gateway }, { inbox, selectedKey, entryKey, keyOf, list }) {
-  const key = keyOf({ bot, gateway }), isSelected = key === selectedKey, flags = inbox[bot.id]?.rows?.[gateway] || {};
+// One row: a bot, however many gateways it is on. Its preview is its latest activity on any of them, and
+// an unread dot becomes the logos of the gateways that have unread.
+function renderBotRow(parent, { bot, gateways }, { inbox, selectedKey, entryKey, list }) {
+  const isSelected = bot.id === selectedKey, flags = inbox[bot.id]?.rows || {}, shown = shownGateway(bot.id);
+  const unread = unreadOrder(bot.id, gateways.filter(gateway => unreadOn(bot.id, bot, gateway, inbox))), waiting = gateways.some(gateway => flags[gateway]?.waiting);
   const row = element('div', `bot-row${isSelected ? ' selected' : ''}${state.primaryBotId === bot.id ? ' primary' : ''}`);
-  row.setAttribute('role', 'listitem'); row.draggable = (state.botSort || 'manual') === 'manual'; row.dataset.botId = bot.id; row.dataset.gateway = gateway; row.dataset.rowKey = key;
-  const open = element('button', 'bot-open'); open.type = 'button'; open.setAttribute('aria-label', `Open ${bot.name}${flags.waiting ? ', waiting for you' : ''}`);
-  open.setAttribute('aria-current', String(isSelected)); open.tabIndex = key === entryKey ? 0 : -1;
+  row.setAttribute('role', 'listitem'); row.draggable = (state.botSort || 'manual') === 'manual'; row.dataset.botId = bot.id; row.dataset.rowKey = bot.id;
+  const open = element('button', 'bot-open'); open.type = 'button';
+  open.setAttribute('aria-label', `Open ${bot.name}${waiting ? ', waiting for you' : ''}${unread.length ? `, ${window.GatewayList.unreadLabel(unread).toLowerCase()}` : ''}`);
+  open.setAttribute('aria-current', String(isSelected)); open.tabIndex = bot.id === entryKey ? 0 : -1;
   const avatar = element('span', 'avatar'); avatar.style.setProperty('--avatar-bg', colorFor(bot.id)); window.HermesAvatars.paint(avatar, bot, state);
   const copy = element('span', 'bot-copy');
   const nameLine = element('div', 'bot-name'), head = element('div', 'bot-head'), status = element('span', 'bot-status');
   nameLine.append(element('span', 'bot-label', bot.name));
   if (state.primaryBotId === bot.id) nameLine.append(element('span', 'primary-badge', 'PRIMARY'));
-  const preview = gateway === 'telegram' ? bot.preview || (bot.username ? `@${bot.username}` : '') : gateway === 'native' ? flags.preview || '' : '';
+  const previewOf = (gateway) => gateway === 'telegram' ? bot.preview : gateway === 'native' ? flags.native?.preview : '';
+  const preview = window.GatewayList.previewOrder({ gateways, shown, unread }).map(previewOf).find(Boolean) || (gateways.includes('telegram') && bot.username ? `@${bot.username}` : '');
   head.append(nameLine, status); copy.append(head);
   if (preview) copy.append(element('div', 'bot-preview', preview));
-  const unreachable = gateway === 'hermes-desktop' && state.webappStatus === 'unreachable';
-  if (gateway === 'telegram') status.append(element('span', 'bot-activity hidden'));
+  const unreachable = shown === 'hermes-desktop' && state.webappStatus === 'unreachable';
+  if (gateways.includes('telegram')) status.append(element('span', 'bot-activity hidden'));
   const hide = element('button', `bot-hide${bot.id === 'hermes' ? ' hidden' : ''}`, '×'); hide.title = `Hide ${bot.name}`; hide.setAttribute('aria-label', hide.title);
-  hide.tabIndex = key === entryKey ? 0 : -1;
+  hide.tabIndex = bot.id === entryKey ? 0 : -1;
   hide.onclick = (event) => { event.stopPropagation(); command('hide-bot', { id: bot.id }); };
   open.append(avatar, copy);
   if (unreachable) { const note = element('span', 'status-text bad', 'Unreachable'); note.title = 'Can’t reach Hermes Desktop'; status.append(note); }
-  if (flags.waiting) { const badge = element('span', 'waiting-badge'); badge.title = 'Waiting for you'; status.append(badge, element('span', 'status-text waiting', 'Waiting')); }
-  if (flags.unread ?? (gateway === 'telegram' && !!bot.unread)) { const dot = element('span', 'unread'); dot.title = 'Unread'; status.append(dot); }
+  if (waiting) { const badge = element('span', 'waiting-badge'); badge.title = 'Waiting for you'; status.append(badge, element('span', 'status-text waiting', 'Waiting')); }
+  if (unread.length) status.append(fillChips(element('span', 'gateway-chips'), unread));
   row.append(open, hide);
-  row.onclick = () => command('open-bot', { id: bot.id, surface: gateway });
+  row.onclick = () => command('open-bot', gateways.includes(shown) ? { id: bot.id, surface: shown } : { id: bot.id });
   open.onfocus = () => {
     for (const item of list.querySelectorAll('.bot-row')) for (const control of item.querySelectorAll('.bot-open, .bot-hide')) control.tabIndex = item === row ? 0 : -1;
   };
@@ -150,6 +157,39 @@ function renderBotActivity(row, bot) {
   status.classList.toggle('hidden', !shown);
   status.classList.toggle('active', active);
   status.title = activity?.detail || 'Live Telegram chat actions. No activity signal does not prove a bot has stopped working.';
+}
+// The chat header's menu: which of this bot's gateways to show (a check beside the one on screen), then its Hermes Desktop pages.
+function renderChatMenu() {
+  const menu = $('chat-menu'), { gateways, pages, shown, unread } = chatMenu;
+  if (!gateways.length && !pages) { setChatMenu(false); return; }
+  if (menu.classList.contains('hidden')) return;
+  const focusedItem = menu.contains(document.activeElement) ? document.activeElement : null, focusedKey = focusedItem?.dataset.gateway || focusedItem?.dataset.page;
+  const item = (role, label) => { const button = element('button', 'chat-menu-item'); button.type = 'button'; button.tabIndex = -1; button.setAttribute('role', role); button.append(element('span', 'chat-menu-label', label)); return button; };
+  menu.replaceChildren();
+  for (const id of gateways) {
+    const button = item('menuitemradio', window.GatewayList.labelOf(id)), logo = element('span', 'gateway-logo');
+    button.dataset.gateway = id; button.setAttribute('aria-checked', String(id === shown));
+    logo.innerHTML = GATEWAY_LOGOS[id]; button.prepend(logo);
+    if (unread.includes(id)) button.append(element('span', 'unread'), element('span', 'sr-only', ', unread'));
+    const check = element('span', 'chat-menu-check', '✓'); check.setAttribute('aria-hidden', 'true'); button.append(check);
+    menu.append(button);
+  }
+  if (gateways.length && pages) { const rule = element('div', 'chat-menu-rule'); rule.setAttribute('role', 'separator'); menu.append(rule); }
+  if (pages) for (const [page, label] of [['settings', 'Bot settings'], ['cron', 'Cron jobs']]) { const button = item('menuitem', label); button.dataset.page = page; menu.append(button); }
+  if (focusedKey) [...menu.children].find(child => (child.dataset.gateway || child.dataset.page) === focusedKey)?.focus({ preventScroll: true });
+}
+function setChatMenu(open, focus = 'checked') {
+  const menu = $('chat-menu'), was = !menu.classList.contains('hidden');
+  if (open && !chatMenu.gateways.length && !chatMenu.pages) open = false;
+  menu.classList.toggle('hidden', !open); $('chat-name').classList.toggle('active', open);
+  if ($('chat-name').getAttribute('aria-haspopup')) $('chat-name').setAttribute('aria-expanded', String(open));
+  if (open) {
+    renderChatMenu();
+    const items = [...menu.querySelectorAll('[role^=menuitem]')];
+    (focus === 'last' ? items.at(-1) : focus === 'first' ? items[0] : items.find(button => button.getAttribute('aria-checked') === 'true') || items[0])?.focus({ preventScroll: true });
+  }
+  // Like the tab list, the menu hangs over the native chat view: it obscures the slot so it paints and is picked reliably.
+  if (open !== was) scheduleLayout();
 }
 function tabIcon(tab) {
   const icon = element('span', 'tab-icon');
@@ -457,18 +497,25 @@ function render(next) {
   const chatName = bot?.name || (state.chatBotId === 'hermes' ? state.hermesBot?.name : '');
   $('chat-title').textContent = hermesActive ? (hermesSelected?.title || `Hermes${state.hermes?.target ? ` · ${state.hermes.target.label}` : ''}`)
     : chatName || (webappActive ? 'Hermes Desktop' : nativeActive ? 'Alan' : 'Telegram');
-  // The name opens Bot settings and Cron jobs (Hermes Desktop pages) for this bot; without them it is plain text.
-  const pagesBot = state.webappCanvas && !!chatName && !!state.inbox?.[state.chatBotId ?? state.selectedBotId]?.gateways?.includes('hermes-desktop');
-  $('chat-name').disabled = !pagesBot; $('chat-name').classList.toggle('openable', pagesBot);
-  if (pagesBot) { $('chat-name').setAttribute('aria-label', `${chatName} settings and cron jobs`); $('chat-name').setAttribute('aria-expanded', String(['cron', 'settings'].includes(state.canvasTab))); }
-  else { $('chat-name').removeAttribute('aria-label'); $('chat-name').removeAttribute('aria-expanded'); }
+  // The name opens a menu: this bot's gateways when it has several, then its Hermes Desktop pages (Bot settings, Cron jobs). With neither it is plain text.
+  const chatId = state.chatBotId ?? state.selectedBotId, chatInbox = state.inbox || {}, connected = chatInbox[chatId]?.gateways || [], shown = shownGateway(chatId);
+  const unread = unreadOrder(chatId, connected.filter(gateway => unreadOn(chatId, bot, gateway, chatInbox)));
+  chatMenu = { id: chatId, shown, unread, gateways: connected.length > 1 ? connected : [], pages: !!state.webappCanvas && !!chatName && connected.includes('hermes-desktop') };
+  const otherUnread = chatMenu.gateways.length ? unread.filter(gateway => gateway !== shown) : [], menuUsable = chatMenu.gateways.length > 0 || chatMenu.pages;
+  $('chat-name').disabled = !menuUsable; $('chat-name').classList.toggle('openable', menuUsable);
+  fillChips($('chat-chips'), otherUnread);
+  if (menuUsable) {
+    $('chat-name').setAttribute('aria-label', `${chatName} menu${otherUnread.length ? `. ${window.GatewayList.unreadLabel(otherUnread)}` : ''}`);
+    $('chat-name').setAttribute('aria-haspopup', 'menu'); $('chat-name').setAttribute('aria-controls', 'chat-menu'); $('chat-name').setAttribute('aria-expanded', String(!$('chat-menu').classList.contains('hidden')));
+  } else for (const attribute of ['aria-label', 'aria-haspopup', 'aria-controls', 'aria-expanded']) $('chat-name').removeAttribute(attribute);
+  renderChatMenu();
   $('chat-avatar').style.display = telegramActive || (bot && !hermesActive) ? '' : 'none';
   window.HermesAvatars.paint($('chat-avatar'), bot || { id: '', name: 'Telegram' }, state);
   $('chat-avatar').title = bot ? `Customize ${bot.name} avatar` : 'Select a bot to customize its avatar';
   renderHermes();
   $('agent-presence').classList.toggle('hidden', !bot);
   if (bot) {
-    window.HermesAvatars.paint($('presence-avatar'), bot, state);
+    window.HermesAvatars.paint($('presence-avatar'), bot, state, undefined, { animate: true });
     $('presence-name').textContent = bot.name;
     $('presence-status').textContent = window.HermesAvatars.activityLabel(bot.activity);
     $('presence-status').classList.toggle('active', window.HermesAvatars.isActive(bot.activity));
@@ -981,7 +1028,7 @@ function rect(id) {
 }
 function scheduleLayout() {
   cancelAnimationFrame(resizeFrame);
-  resizeFrame = requestAnimationFrame(() => api.layout({ telegram: focusMode ? null : rect('telegram-slot'), webapp: focusMode ? null : rect('webapp-slot'), browser: rect('browser-slot'), obscured: dialogStack.length > 0 || !$('tabs-panel').classList.contains('hidden') || !$('status-panel').classList.contains('hidden') }));
+  resizeFrame = requestAnimationFrame(() => api.layout({ telegram: focusMode ? null : rect('telegram-slot'), webapp: focusMode ? null : rect('webapp-slot'), browser: rect('browser-slot'), obscured: dialogStack.length > 0 || !$('chat-menu').classList.contains('hidden') || !$('tabs-panel').classList.contains('hidden') || !$('status-panel').classList.contains('hidden') }));
 }
 // Registered once with a mutable target: re-rendering the migrate card must
 // not stack listeners or every log chunk would append once per past render.
@@ -2030,6 +2077,7 @@ document.addEventListener('click', (event) => {
   if (!event.target.closest('#sort-menu') && !event.target.closest('#sort-bots')) { $('sort-menu').classList.add('hidden'); $('sort-bots').setAttribute('aria-expanded', 'false'); }
   if (!event.target.closest('#downloads-menu') && !event.target.closest('#downloads-button')) closeDownloads();
   if (!event.target.closest('#tabs-panel') && !event.target.closest('#tabs-menu')) setTabsPanel(false);
+  if (!event.target.closest('#chat-menu') && !event.target.closest('#chat-name')) setChatMenu(false);
   if (!event.target.closest('#status-panel') && !event.target.closest('#status-more')) setStatusPanel(false);
 });
 const openStatusPanel = () => { setStatusPanel(true); $('status-panel').querySelector('.status-panel-row')?.focus({ preventScroll: true }); };
@@ -2047,7 +2095,25 @@ $('presence-avatar').onclick = () => showAvatarEditor();
 $('chat-avatar').onclick = () => showAvatarEditor();
 $('chat-avatar').onkeydown = (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); showAvatarEditor(); } };
 $('vm-toggle').onclick = () => { if (state?.showBrowser === false) command('settings', { showBrowser: true }); command('toggle-vps-view'); };
-$('chat-name').onclick = () => command('canvas-bot-pages');
+$('chat-name').onclick = () => setChatMenu($('chat-menu').classList.contains('hidden'));
+$('chat-name').onkeydown = (event) => {
+  if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+  event.preventDefault(); setChatMenu(true, event.key === 'ArrowDown' ? 'first' : 'last');
+};
+$('chat-menu').onkeydown = (event) => {
+  const items = [...$('chat-menu').querySelectorAll('[role^=menuitem]')], at = items.indexOf(document.activeElement);
+  if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setChatMenu(false); $('chat-name').focus({ preventScroll: true }); return; }
+  if (event.key === 'Tab') { setChatMenu(false); return; }
+  const target = { ArrowDown: items[(at + 1) % items.length], ArrowUp: items[(at - 1 + items.length) % items.length], Home: items[0], End: items.at(-1) }[event.key];
+  if (target) { event.preventDefault(); target.focus({ preventScroll: true }); }
+};
+$('chat-menu').onclick = (event) => {
+  const item = event.target.closest('[role^=menuitem]');
+  if (!item) return;
+  setChatMenu(false); $('chat-name').focus({ preventScroll: true });
+  if (!item.dataset.gateway) command('canvas-bot-pages', { tab: item.dataset.page });
+  else if (item.dataset.gateway !== chatMenu.shown) command('open-bot', { id: chatMenu.id, surface: item.dataset.gateway });
+};
 $('canvas-tabs').onclick = (event) => { const tab = event.target.closest('[data-canvas]')?.dataset.canvas; if (!tab) return; terminalFocus = tab === 'terminal'; command('canvas-tab', { tab, start: tab === 'terminal' }); };
 $('canvas-tabs').onkeydown = (event) => {
   const shown = [...$('canvas-tabs').children].filter(button => !button.hidden), at = shown.indexOf(document.activeElement);
@@ -2159,7 +2225,7 @@ $('update-all-go').onclick = () => {
 };
 $('update-all-popup').onclick = (event) => { if (event.target === $('update-all-popup')) closeUpdateAll(); };
 $('update-popup').onclick = (event) => { if (event.target === $('update-popup') && !state?.update?.busy) $('update-later').click(); };
-document.addEventListener('keydown', (event) => { if (event.key === 'Escape') { if (modalOpen) closeModal(); else if (!$('tabs-panel').classList.contains('hidden')) { setTabsPanel(false); $('tabs-menu').focus({ preventScroll: true }); } else if (!$('status-panel').classList.contains('hidden')) { setStatusPanel(false); (canFocus($('status-more')) ? $('status-more') : $('workspace-status')).focus({ preventScroll: true }); } else closeDownloads(); } });
+document.addEventListener('keydown', (event) => { if (event.key === 'Escape') { if (modalOpen) closeModal(); else if (!$('chat-menu').classList.contains('hidden')) { setChatMenu(false); $('chat-name').focus({ preventScroll: true }); } else if (!$('tabs-panel').classList.contains('hidden')) { setTabsPanel(false); $('tabs-menu').focus({ preventScroll: true }); } else if (!$('status-panel').classList.contains('hidden')) { setStatusPanel(false); (canFocus($('status-more')) ? $('status-more') : $('workspace-status')).focus({ preventScroll: true }); } else closeDownloads(); } });
 $('splitter').onpointerdown = (event) => {
   const startX = event.clientX, startWidth = document.querySelector('.chat-pane').getBoundingClientRect().width; $('splitter').setPointerCapture(event.pointerId); $('splitter').classList.add('active');
   const sidebar = document.querySelector('.sidebar');
