@@ -374,6 +374,16 @@ def agent_desktop():
     return os.environ.get('ALANS_WAY_AGENT_DESKTOP') == '1'
 
 
+def pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        pass
+    return True
+
+
 def check_app(pid):
     """The app's AT-SPI handle. On the agent's own desktop it is None for pid 0 (the whole screen) and for apps AT-SPI cannot see."""
     agent = agent_desktop()
@@ -381,6 +391,9 @@ def check_app(pid):
         fail('App not found.', 'not_found')
     if pid == 0:
         return None
+    # A pid that has exited is not an app with no windows: reading it would answer ok with an empty tree.
+    if not pid_alive(pid):
+        fail('App not found.', 'not_found')
     try:
         app = resolve_app(pid)
     except Fail as exc:
@@ -735,6 +748,9 @@ def step_drag(bus, target, step):
     origin = item['x'] if horizontal else item['y']
     end = x2 if horizontal else y2
     fraction = 0 if span <= 0 else min(1, max(0, (end - origin) / span))
+    # shortcut: Qt, web and Java vertical sliders put the maximum at the top; GTK's default puts the minimum there. Upgrade if GTK sliders show up.
+    if not horizontal and item['role'] == 'slider':
+        fraction = 1 - fraction
     try:
         done = bus.call(handle[0], handle[1], 'org.a11y.atspi.Value', 'SetCurrentValue', bus.v('(d)', (low + fraction * (high - low),)), '(b)')[0]
     except Exception:
@@ -816,8 +832,12 @@ def xdotool_partial(args):
 
 def window_geometry(pid):
     """Visible windows of pid as [(wid, {X,Y,WIDTH,HEIGHT})]; two xdotool spawns however many windows."""
-    ids = xdotool('search', '--onlyvisible', '--pid', str(pid)).split()[:20]
+    found_ids, searched = xdotool_partial(['search', '--onlyvisible', '--pid', str(pid)])
+    ids = found_ids.split()[:20]
     if not ids:
+        # search exits non-zero when nothing matches, so only a display xdotool cannot reach proves it failed.
+        if not searched and not xdotool_partial(['getdisplaygeometry'])[1]:
+            fail('xdotool could not reach the display, so that app\'s windows could not be read.')
         return []
     chain = [part for wid in ids for part in ('getwindowgeometry', '--shell', wid)]
     found, current = [], None
@@ -1565,7 +1585,7 @@ def cmd_selftest(req):
     popup = {'X': '500', 'Y': '500', 'WIDTH': '50', 'HEIGHT': '50'}
     windows = [('42', main_box)]
     io = dict(send_xdotool=sent.append, best_window=lambda pid: ('42', main_box), window_geometry=lambda pid: windows, xdotool=fake_x, resolve_app=lambda pid: None,
-              active_pid=lambda: None, proc_name=lambda pid: 'gedit', ensure_display=lambda: displays.append(1))
+              active_pid=lambda: None, proc_name=lambda pid: 'gedit', ensure_display=lambda: displays.append(1), pid_alive=lambda pid: True)
     restore = stubbed(True, **io)
     try:
         steps = [{'action': 'click', 'x': 5, 'y': 6}, {'action': 'type', 'text': 'hi'},
@@ -1709,6 +1729,64 @@ def cmd_selftest(req):
         check(x_window_pids() == [10, 30] and calls[1] == ['getwindowpid', '3'], 'a window without a pid is skipped')
     finally:
         restore()
+    gone = stubbed(True, pid_alive=lambda pid: False, resolve_app=lambda pid: None, ensure_display=lambda: None)
+    try:
+        for label, run in (('snapshot', lambda: cmd_snapshot({'pid': 9})), ('act', lambda: cmd_act({'pid': 9, 'steps': [{'action': 'key', 'key': 'a'}]})),
+                           ('menu', lambda: cmd_menu({'pid': 9, 'path': ['File']}))):
+            try:
+                run()
+                refused = None
+            except Fail as exc:
+                refused = exc.code
+            check(refused == 'not_found', f'{label} on an exited pid is refused, not answered ok with an empty tree')
+        check(check_app(0) is None, 'the screen needs no process')
+    finally:
+        gone()
+    probes = []
+
+    def search_fails(args):
+        probes.append(list(args))
+        return ('', False) if args[0] == 'search' else (('1920 1080\n', True) if state['display'] else ('', False))
+    state['display'] = True
+    restore = stubbed(True, xdotool_partial=search_fails)
+    try:
+        check(window_geometry(9) == [], 'an app with no window is just that while xdotool works')
+        state['display'] = False
+        try:
+            window_geometry(9)
+            refused = None
+        except Fail as exc:
+            refused = (exc.code, 'xdotool' in str(exc))
+        check(refused == ('failed', True), 'a failing xdotool is reported as one, not as an app with no window')
+    finally:
+        restore()
+    sets = []
+
+    class Slider:
+        def prop(self, dest, path, name, iface):
+            return {'MinimumValue': 0, 'MaximumValue': 100}[name]
+
+        def v(self, signature, values):
+            return values
+
+        def call(self, dest, path, iface, method, args, signature):
+            sets.append(args[0])
+            return (True,)
+
+    class At:
+        def __init__(self, item):
+            self.item = item
+
+        def element(self, step):
+            return self.item, ('d', '/s')
+    tall = {'role': 'slider', 'x': 0, 'y': 100, 'width': 20, 'height': 200}
+    for item, step, wanted, label in ((tall, {'x2': 10, 'y2': 100}, 100, 'the top of a vertical slider is its maximum'),
+                                      (tall, {'x2': 10, 'y2': 300}, 0, 'the bottom of a vertical slider is its minimum'),
+                                      ({**tall, 'role': 'scroll bar'}, {'x2': 10, 'y2': 100}, 0, 'the top of a vertical scroll bar is its minimum'),
+                                      ({**tall, 'width': 200, 'height': 20, 'role': 'slider'}, {'x2': 150, 'y2': 110}, 75, 'a horizontal slider grows to the right')):
+        del sets[:]
+        step_drag(Slider(), At(item), step)
+        check(sets == [wanted], label)
     limits, real_call = [], subprocess.check_call
 
     def slow(args, timeout, **_kw):
@@ -1755,7 +1833,7 @@ def cmd_selftest(req):
     restore = stubbed(True, grab=lambda box, cap: grabbed.append((box, cap)) or fake_jpeg,
                       best_window=lambda pid: ('42', {'X': '-5', 'Y': '10', 'WIDTH': '800', 'HEIGHT': '600'}),
                       xdotool=lambda *args: '1920 1080\n', resolve_app=lambda pid: None, ensure_display=lambda: displays.append(1),
-                      capture=lambda wid, cap, geo: (fake_jpeg, (32, 16)))
+                      capture=lambda wid, cap, geo: (fake_jpeg, (32, 16)), pid_alive=lambda pid: True)
     try:
         whole = cmd_shot({'pid': 0, 'maxWidth': 640})
         check(grabbed[-1] == ((0, 0, 1920, 1080), 640) and (whole['windowX'], whole['windowY'], whole['windowWidth'], whole['windowHeight'])
@@ -1769,9 +1847,9 @@ def cmd_selftest(req):
               'the fallback reports the geometry it captured')
     finally:
         restore()
-    names = ('resolve_app', 'active_pid', 'proc_name')
+    names = ('resolve_app', 'active_pid', 'proc_name', 'pid_alive')
     saved_fns = {name: globals()[name] for name in names}
-    globals().update(resolve_app=lambda pid: ('d', '/p'), proc_name=lambda pid: 'gedit', active_pid=lambda: None)
+    globals().update(resolve_app=lambda pid: ('d', '/p'), proc_name=lambda pid: 'gedit', active_pid=lambda: None, pid_alive=lambda pid: True)
     try:
         for front, code in ((None, 'failed'), (5, 'in_front')):
             globals()['active_pid'] = lambda front=front: front

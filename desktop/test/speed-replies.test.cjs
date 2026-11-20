@@ -931,7 +931,8 @@ test('the app refuses an unapproved commit at dispatch, however it is targeted, 
   // with a harmless Space before testing an untargeted carriage return.
   assert.equal((await act(tab, { action: 'press', name: 'Email', key: 'Space' })).status, 200);
   await refused({ action: 'press', key: '\r' }, 'a raw carriage return in the focused field');
-  await refused({ action: 'eval', code: 'document.title' }, 'a page script');
+  await refused({ action: 'eval', code: 'document.title = "x"' }, 'a page script that writes');
+  assert.equal((await act(tab, { action: 'eval', code: 'document.title' })).status, 200, 'a page script that only reads is not a commit');
   await refused({ action: 'cdp', method: 'Runtime.evaluate', params: { expression: '1' } }, 'Runtime.evaluate');
   await refused({ action: 'cdp', method: 'Input.dispatchKeyEvent', params: { type: 'keyDown', key: 'Enter' } }, 'raw DevTools input');
   await refused({ action: 'reload' }, 'a reload of a page with a commit control');

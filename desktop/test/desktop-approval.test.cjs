@@ -2,6 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { createDesktopApproval } = require('../src/desktop-approval.cjs');
 const { computerRoutes } = require('./computer-routes-fixture.cjs');
+const { calls, context } = require('../src/call-budget.cjs');
 
 function gate(answers, trusted = () => false) {
   const asked = [];
@@ -123,5 +124,39 @@ test('extracted broker routes reject a revoked principal before the driver', asy
   const { approval } = gate([true]);
   const { request, seen } = computerRoutes({}, { approval, identityFor: () => ({ generation: 'revoked', valid: () => false }) });
   assert.equal((await request('/v1/computer/7/action', 'grok', 'POST')).body.error, 'credential_revoked');
+  assert.deepEqual(seen, []);
+});
+
+const withBudget = (ms, work) => calls.run(context(ms, undefined), work);
+const closed = (signal) => new Promise(resolve => signal.addEventListener('abort', () => resolve(null), { once: true }));
+
+test('the prompt wait stops at the caller\'s deadline, closes the prompt and says it timed out', async () => {
+  const signals = [];
+  const approval = createDesktopApproval({ trusted: () => false, ask: (name, botId, signal) => { signals.push(signal); return closed(signal); } });
+  const started = Date.now();
+  assert.deepEqual(await withBudget(60, () => approval.check('grok', 'Grok Bot')), { error: 'desktop_approval_timeout', name: 'Grok Bot' });
+  assert.ok(Date.now() - started < 1000, 'did not wait the 40 s');
+  assert.equal(signals[0].aborted, true, 'the dialog is closed');
+  assert.deepEqual(await withBudget(0, () => approval.check('grok', 'Grok Bot')), { error: 'desktop_approval_timeout', name: 'Grok Bot' });
+  assert.equal(signals.length, 1, 'a call with no time left opens no prompt');
+  const answered = createDesktopApproval({ trusted: () => false, ask: async () => true });
+  assert.equal(await withBudget(1000, () => answered.check('grok', 'Grok Bot')), null, 'an answer inside the budget still counts');
+});
+
+test('a shared prompt stays open until the last waiter has given up', async () => {
+  let signal;
+  const approval = createDesktopApproval({ trusted: () => false, ask: (name, botId, given) => { signal = given; return closed(given); } });
+  const short = withBudget(30, () => approval.check('grok', 'Grok Bot'));
+  const long = withBudget(300, () => approval.check('grok', 'Grok Bot'));
+  assert.equal((await short).error, 'desktop_approval_timeout');
+  assert.equal(signal.aborted, false, 'the longer call is still waiting');
+  assert.equal((await long).error, 'desktop_approval_timeout');
+  assert.equal(signal.aborted, true);
+});
+
+test('the route answers a timed-out approval with 403 and never reaches the driver or the lease', async () => {
+  const approval = createDesktopApproval({ trusted: () => false, ask: (name, botId, signal) => closed(signal) });
+  const { request, seen } = computerRoutes({}, { approval });
+  assert.deepEqual(await request('/v1/computer/7/action', 'grok', 'POST', { 'x-alans-way-remaining-ms': '40' }), { status: 403, body: { error: 'desktop_approval_timeout', name: 'grok' } });
   assert.deepEqual(seen, []);
 });
