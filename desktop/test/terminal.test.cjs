@@ -1,7 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { PassThrough } = require('node:stream');
-const { terminalCommand, createTerminals } = require('../src/terminal.cjs');
+const { terminalCommand, createTerminals, killProcessGroup } = require('../src/terminal.cjs');
 
 const exists = (file) => file === '/bin/zsh';
 const inner = (command) => command.args.slice(command.args.indexOf('sh', 2) + 1);
@@ -123,4 +123,58 @@ test('an ended program whose pipeline never closes is still ended after a second
   assert.deepEqual(exited, []);
   t.mock.timers.tick(1000);
   assert.deepEqual(exited, ['1']);
+});
+
+test('burst stdout chunks coalesce per frame, respect the buffer cap, and flush before exit', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const children = [], data = [], exited = [];
+  const terminals = createTerminals({
+    spawnProcess: () => { children.push(fakeChild()); return children.at(-1); },
+    build: () => ({ file: 'x', args: [] }),
+    flushMs: 16,
+    maxBufferBytes: 100,
+    onData: (id, text) => data.push([id, text]),
+    onExit: (id) => exited.push(id),
+  });
+  terminals.start('1');
+  // 200 small chunks inside one frame coalesce into leading chunk + cap flushes + trailing batch.
+  for (let i = 0; i < 50; i++) children[0].stdout.write(`L${i}\n`);
+  assert.ok(data.length < 10, `expected coalesced writes, got ${data.length}`);
+  t.mock.timers.tick(16);
+  const expected = Array.from({ length: 50 }, (_, i) => `L${i}\n`).join('');
+  assert.equal(data.map(([, text]) => text).join(''), expected);
+
+  // Let the quiet window expire, then verify buffered data flushes synchronously before onExit fires.
+  t.mock.timers.tick(16);
+  data.length = 0;
+  children[0].stdout.write('first');
+  children[0].stdout.write('trailing');
+  assert.equal(data.length, 1);
+  children[0].emit('close');
+  assert.deepEqual(data, [['1', 'first'], ['1', 'trailing']]);
+  assert.deepEqual(exited, ['1']);
+});
+
+test('killProcessGroup refuses non-positive, non-integer, and pid=1 targets, and injected spawns never signal the host', (t) => {
+  const calls = [];
+  const spy = (pid, sig) => calls.push([pid, sig]);
+  for (const bad of [1, 0, -1, -42, undefined, null, NaN, 1.5, '42']) killProcessGroup(bad, spy);
+  assert.deepEqual(calls, []);
+  killProcessGroup(4242, spy);
+  assert.deepEqual(calls, [[-4242, 'SIGKILL']]);
+
+  const hostKills = [];
+  t.mock.method(process, 'kill', (pid, sig) => hostKills.push([pid, sig]));
+  for (const pid of [1, 0, undefined, 4242]) {
+    let child;
+    const terminals = createTerminals({
+      spawnProcess: () => { child = Object.assign(fakeChild(), { pid }); return child; },
+      build: () => ({ file: 'x', args: [] }),
+      onData() {},
+      onExit() {},
+    });
+    terminals.start('1');
+    child.emit('close');
+  }
+  assert.deepEqual(hostKills, []);
 });

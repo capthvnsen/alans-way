@@ -75,7 +75,7 @@ function createActivityTracker() {
     return { state: 'active', ...evidence, label: ACTION_LABELS[evidence.action], source: ACTIVITY_SOURCE };
   }
 
-  return { setContext, ingest, get, clear, expire };
+  return { setContext, ingest, get, clear, expire, hasActive: () => available || active.size > 0 };
 }
 
 module.exports = { ACTIVITY_TTL_MS, BRIDGE_TTL_MS, ACTIVITY_SOURCE, ACTION_LABELS, createActivityTracker };
