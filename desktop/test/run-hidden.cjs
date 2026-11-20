@@ -26,7 +26,7 @@ if (!name?.startsWith('test:') || !require('../package.json').scripts[name]) {
 }
 if (NEEDS_SCREEN[name]) { console.log(`SKIPPED ${name} in hidden mode: it ${NEEDS_SCREEN[name]}.`); process.exit(0); }
 
-const tmp = privateTmp();
+const tmp = privateTmp({ strict: false });
 const profile = fs.mkdtempSync(path.join(tmp.dir, 'hermes-hidden-'));
 const { env } = hiddenEnv({ ...process.env, ...tmp.env, HERMES_WORKSPACE_DATA: process.env.HERMES_WORKSPACE_DATA || profile });
 const child = spawn('npm', ['run', name], { cwd: desktop, env, stdio: 'inherit' });

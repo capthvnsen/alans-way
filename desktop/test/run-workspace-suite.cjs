@@ -21,7 +21,7 @@ if (!names.length || names.some(name => ![...stable, ...live].includes(name))) {
 let failed = false;
 for (const name of names) {
   const out = fs.mkdtempSync(path.join(os.tmpdir(), `workspace-${name}-`));
-  const tmp = privateTmp();
+  const tmp = privateTmp({ strict: false });
   const env = { ...process.env, ...tmp.env };
   delete env.ELECTRON_RUN_AS_NODE;
   for (const key of ['HERMES_APPROVAL_EVIDENCE', 'HERMES_BINDING_EVIDENCE', 'HERMES_APPROVAL_PROXY_EVIDENCE',

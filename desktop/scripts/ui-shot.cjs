@@ -20,7 +20,7 @@ if (!process.versions.electron) {
   if (!arg('out') || (only && !STATES.includes(only))) { console.error(`Usage: npm run ui:shot -- --out <dir> [--state ${STATES.join('|')}]`); process.exit(2); }
   fs.mkdirSync(out, { recursive: true });
   (async () => {
-    const tmp = privateTmp();
+    const tmp = privateTmp({ strict: false });
     const profile = fs.mkdtempSync(path.join(tmp.dir, 'ui-shot-'));
     const mock = await createMock({ key: KEY }).listen();
     // Stands in for Hermes Desktop at a bot's address; one bot points at a port nothing listens on.

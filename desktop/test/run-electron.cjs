@@ -2,7 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { privateTmp } = require('./with-tmp.cjs');
-const tmp = privateTmp();
+const tmp = privateTmp({ strict: false });
 const profile = fs.mkdtempSync(path.join(tmp.dir, 'hermes-electron-suite-'));
 const child = spawn(require('electron'), [`--user-data-dir=${profile}`, path.resolve(process.argv[2])], {
   env: { ...process.env, ...tmp.env, HERMES_TEST_PROFILE: profile }, stdio: 'inherit',

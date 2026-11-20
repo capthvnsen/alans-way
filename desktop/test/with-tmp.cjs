@@ -16,7 +16,9 @@ const ALLOWED = /^(workspace-|.*evidence|hw-tailnet-ssh-|node-compile-cache$|vm-
 const CHROMIUM = ['Crashpad', 'Local Storage', 'Network', 'GPUCache', 'Code Cache', 'Session Storage', 'Shared Dictionary', 'Partitions', 'Local State', 'Preferences',
   'blob_storage', 'DawnGraphiteCache', 'DawnWebGPUCache', 'shared_proto_db', 'WebStorage', 'DIPS', 'SingletonLock', 'SingletonCookie', 'SingletonSocket'];
 const isProfile = dir => { try { return CHROMIUM.some(name => fs.existsSync(path.join(dir, name))); } catch { return false; } };
-function privateTmp() {
+// strict: false is for runs that start Electron. Chromium keeps writing into a profile after the test's own code has
+// removed it, in files no list here can keep up with, so those runs sweep and report but do not fail.
+function privateTmp({ strict = true } = {}) {
   // /tmp keeps paths short: macOS's own temp folder is 49 characters, and unix sockets under it cap at 104.
   const dir = fs.mkdtempSync(path.join(process.platform === 'win32' ? os.tmpdir() : '/tmp', 'ht-'));
   return {
@@ -30,7 +32,7 @@ function privateTmp() {
       const left = all.filter(name => /^[A-Za-z][\w-]*-[A-Za-z0-9]{6}$/.test(name) && !/^dotnet-diagnostic-/.test(name));
       fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
       if (all.length > left.length) console.error(`Swept ${all.length - left.length} file(s) left by tools the tests ran.`);
-      if (left.length) { console.error(`TEMP LEAK: the tests left ${left.length} folder(s) behind: ${left.slice(0, 10).join(', ')}`); return false; }
+      if (left.length) { console.error(`TEMP LEAK: the tests left ${left.length} folder(s) behind: ${left.slice(0, 10).join(', ')}`); return !strict; }
       return true;
     },
   };
