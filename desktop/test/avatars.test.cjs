@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { isActive, activityLabel, normalizeEyes, normalizeTint, resolveAvatar, gazeOffset, easeGaze, eyePose, createWander } = require('../src/avatars.js');
+const { isActive, activityLabel, normalizeEyes, normalizeTint, resolveAvatar, gazeOffset, easeGaze, eyePose, createWander, createGaze } = require('../src/avatars.js');
 
 test('animation requires an active signal and stops when its lease expires', () => {
   for (const activity of [undefined, {}, { state: 'idle' }, { state: 'unknown' }, { state: 'typing' }, { label: 'working' }, { state: 'active', expiresAt: 100 }, { state: 'active', expiresAt: '999' }]) {
@@ -158,4 +158,66 @@ test('marble busts always draw the manifest eyes; photos and imported pictures s
     assert.equal(plain.cutout, false, 'and is not treated as a tintable cutout');
   }
   assert.equal(resolveAvatar({ id: '1', name: 'No picture' }, {}).eyes.enabled, false);
+});
+
+const seeded = (seed) => () => (seed = (seed * 1664525 + 1013904223) % 4294967296) / 4294967296;
+
+test('an idle wander glances less far and more slowly than a working one, and still blinks', () => {
+  const measure = (options) => {
+    const sample = createWander(seeded(99), options);
+    let farthest = 0, glances = 0, previous = '', blinks = 0, blinking = false;
+    for (let now = 0; now < 120000; now += 16) {
+      const { x, y, blink } = sample(now);
+      assert.ok(Math.hypot(x, y) <= 1);
+      farthest = Math.max(farthest, Math.hypot(x, y));
+      const spot = `${Math.round(x * 3)},${Math.round(y * 3)}`;
+      if (spot !== previous) glances++;
+      previous = spot;
+      if (blink > 0 && !blinking) blinks++;
+      blinking = blink > 0;
+    }
+    return { farthest, glances, blinks };
+  };
+  const working = measure(undefined), idle = measure({ reach: 0.4, hold: 2.2 });
+  assert.ok(idle.farthest < 0.5 && working.farthest > 0.7, `reach ${idle.farthest} vs ${working.farthest}`);
+  assert.ok(idle.glances < working.glances * 0.6, `glances ${idle.glances} vs ${working.glances}`);
+  assert.ok(idle.blinks >= 15 && idle.blinks <= 60, `an idle avatar still blinks at natural intervals: ${idle.blinks}`);
+});
+
+test('the gaze follows a moving pointer, then idles once it has been still for a couple of seconds', () => {
+  const gaze = createGaze({ random: seeded(7) }), centre = { x: 100, y: 100 };
+  const look = (now, busy = false) => gaze.sample(now, { busy, centre, range: 50 });
+  assert.equal(look(0).following, false, 'no pointer yet: idle');
+  gaze.pointer({ x: 400, y: 100 }, 1000);
+  let sample = look(1016);
+  assert.deepEqual([sample.following, sample.x, sample.y], [true, 1, 0], 'looks right at a pointer to the right');
+  gaze.pointer({ x: -300, y: 100 }, 2000);
+  assert.equal(look(2016).x, -1, 'and follows it when it moves');
+  gaze.pointer({ x: -300, y: 101 }, 3000);
+  assert.equal(look(3016).following, true, 'a 1 px tremor is not movement, but the pointer moved a moment ago');
+  assert.equal(look(2000 + 2199).following, true);
+  assert.equal(look(2000 + 2201).following, false, 'still for 2.2 s: back to idling');
+  for (let now = 4300; now < 40000; now += 50) {
+    sample = look(now);
+    assert.ok(Math.hypot(sample.x, sample.y) < 0.5, 'idle glances stay small');
+  }
+  gaze.pointer({ x: 400, y: 400 }, 41000);
+  assert.equal(look(41016).following, true, 'moving again wakes the following');
+  gaze.pointer(null, 41100);
+  assert.equal(look(41116).following, false, 'a pointer that left the window is not followed');
+  gaze.pointer({ x: 400, y: 400 }, 44000);
+  assert.equal(look(44016).following, false, 'coming back at the same spot, long after it last moved, is not movement');
+  gaze.pointer({ x: 420, y: 400 }, 44100);
+  assert.equal(look(44116).following, true);
+  assert.equal(look(44116, true).following, true, 'a working bot follows the pointer too');
+  assert.equal(gaze.sample(44116, { centre: undefined }).following, false, 'nowhere to look from, nothing to follow');
+});
+
+test('a gaze stays inside the unit disk whatever the pointer does', () => {
+  const gaze = createGaze({ random: seeded(3) });
+  for (const [index, point] of [{ x: 1e9, y: -1e9 }, { x: NaN, y: 4 }, { x: 5, y: 5 }, { x: 99, y: 7 }].entries()) {
+    gaze.pointer(point, index * 100);
+    const { x, y } = gaze.sample(index * 100 + 16, { centre: { x: 5, y: 5 }, range: 30 });
+    assert.ok(Math.hypot(x, y) <= 1);
+  }
 });
