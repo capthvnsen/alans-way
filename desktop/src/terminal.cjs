@@ -7,6 +7,7 @@ const { isSshTarget } = require('./core.cjs');
 const quote = (value) => `'${String(value).replace(/'/g, `'\\''`)}'`;
 const size = (value, fallback, max) => Number.isInteger(value) ? Math.min(max, Math.max(2, value)) : fallback;
 const userShell = (env, exists) => typeof env.SHELL === 'string' && /^\/[\w./+-]+$/.test(env.SHELL) && exists(env.SHELL) ? env.SHELL : '/bin/sh';
+const killProcessGroup = (pid, kill = process.kill) => { if (Number.isInteger(pid) && pid > 1) kill(-pid, 'SIGKILL'); };
 
 // `script` supplies the pty. macOS's refuses a socket for stdin, which is what a Node pipe is, so `cat` feeds it a real pipe.
 // The inner script is fixed: size and program arrive as separate arguments and fd 3 reports the tty path and the end of the session.
@@ -22,7 +23,7 @@ function terminalCommand({ platform = process.platform, env = process.env, sshHo
   return { file: '/bin/sh', args: ['-c', 'cat | script "$@"', 'sh', ...script] };
 }
 
-function createTerminals({ platform = process.platform, spawnProcess = spawn, run = execFile, build = terminalCommand, waitMs = 1500, flushMs = 16, maxBufferBytes = 65536, onData, onExit }) {
+function createTerminals({ platform = process.platform, spawnProcess = spawn, killGroup = spawnProcess === spawn ? killProcessGroup : () => {}, run = execFile, build = terminalCommand, waitMs = 1500, flushMs = 16, maxBufferBytes = 65536, onData, onExit }) {
   const sessions = new Map();
   const flush = (id, session) => {
     clearTimeout(session.flushTimer);
@@ -40,7 +41,7 @@ function createTerminals({ platform = process.platform, spawnProcess = spawn, ru
     if (!quiet && session.buffer) { const text = session.buffer; session.buffer = ''; onData(id, text); }
     else session.buffer = '';
     sessions.delete(id);
-    try { process.kill(-session.child.pid, 'SIGKILL'); } catch {}
+    try { killGroup(session.child.pid); } catch {}
     if (!quiet) onExit(id);
   };
   return {
@@ -96,4 +97,4 @@ function createTerminals({ platform = process.platform, spawnProcess = spawn, ru
   };
 }
 
-module.exports = { terminalCommand, createTerminals };
+module.exports = { terminalCommand, createTerminals, killProcessGroup };
