@@ -1,7 +1,7 @@
 // Measures startup with saved session-only sign-ins, hidden, on a throwaway profile (never the real one):
 //   node test/probe-session-restore.cjs [cookiesPerPartition=20] [keychainDelayMs=0]
 // Also seeds one saved tab on a loopback server and prints when that server first sees a request (+ms since the app was
-// spawned, about 100 ms ahead of the app's own clock), to show restored tabs waiting for the restore or its cap.
+// spawned, so it also includes Electron's own startup before the app's clock starts), to show restored tabs waiting for the restore or its cap.
 // Seeds preferences.json with sessionCookies sealed by the mock keychain, launches the app hidden under the
 // watchdog with HERMES_WORKSPACE_PROFILE_BOOT=1, and prints the [boot-timing] lines. Not part of `npm test`.
 // The mock keychain answers at once, so by default this times only the CDP/view steps. keychainDelayMs delays
