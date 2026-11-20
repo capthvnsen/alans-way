@@ -10,7 +10,9 @@
 // every submit it receives is recorded in `submits`.
 //
 // cfg: { epoch, sessions, ringMax=512, orphanGraceMs=20000, deltaCount=3,
-//        firstDeltaMs=0, deltaMs=0, extraRpc, mangleReplay(events) }
+//        firstDeltaMs=0, deltaMs=0, wholeReply=false, extraRpc, mangleReplay(events) }
+// wholeReply: no message.delta at all, only message.start and a message.complete that carries the text (a Hermes
+// with streaming off, as the VM is).
 function createGatewayEngine(cfg = {}) {
   let epoch = cfg.epoch || 'epoch-1';
   let epochCounter = 1;
@@ -62,7 +64,7 @@ function createGatewayEngine(cfg = {}) {
     let i = 0;
     const step = () => {
       if (i === 0) emit(s, 'message.start', {});
-      if (i < tokens.length) { emit(s, 'message.delta', { text: tokens[i] }); i += 1; later(step, cfg.deltaMs ?? 0); return; }
+      if (i < tokens.length && !cfg.wholeReply) { emit(s, 'message.delta', { text: tokens[i] }); i += 1; later(step, cfg.deltaMs ?? 0); return; }
       const full = tokens.join('');
       storedFor(s.session_key).messages.push({ id: ++rowSeq, role: 'assistant', content: full, timestamp: nowSec() });
       emit(s, 'message.complete', { text: full, status: 'complete' });

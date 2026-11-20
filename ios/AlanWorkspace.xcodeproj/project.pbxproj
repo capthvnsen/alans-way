@@ -9,30 +9,53 @@
 /* Begin PBXBuildFile section */
 		00739F3960B63B1ECA42F02B /* WorkspaceSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 811600DA355EAF826AC24E3C /* WorkspaceSettingsTests.swift */; };
 		062D5F6B7025E5D125D7A716 /* DiagnosticsStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1FD3F25D86FEDD20F7A4E815 /* DiagnosticsStoreTests.swift */; };
+		0832BEB3286BC64939EFE606 /* GatewayOutboxTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B16689FE84453B992337FD4 /* GatewayOutboxTests.swift */; };
 		0E01E07670CD42DDDFE7048F /* TDLibKit in Frameworks */ = {isa = PBXBuildFile; productRef = C5F671911FF079BBFC04C910 /* TDLibKit */; };
+		10D5D7D23638DC1DE62F1F7B /* GatewayWireTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F333CBC839B7FBB723069538 /* GatewayWireTests.swift */; };
 		1607CCAFA3E4F15CF501B892 /* TelegramStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4695E1A2C3D735F7BAD249F6 /* TelegramStore.swift */; };
 		270D178306AC87286B87AEAF /* TelegramMiniAppView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24F2A64E9623B56C19845E75 /* TelegramMiniAppView.swift */; };
 		2AC6296E685174669AEC7A6D /* AgentListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5BE46BDAF695DC941BEC5180 /* AgentListView.swift */; };
 		309F19D03DC3422BDE3A6E77 /* TelegramModelMapperTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFBF6A1C8690784EBDB03C36 /* TelegramModelMapperTests.swift */; };
+		37F6D9C152EDBD1A9C59F022 /* GatewayOutbox.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1550656785AB39CE6B78BE6F /* GatewayOutbox.swift */; };
 		3D9C8EF741E323485CAF2CC6 /* TelegramErrorText.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B8781305D3F4E40930E8393 /* TelegramErrorText.swift */; };
+		46AA716747B99325C1CB92E1 /* GatewayMarkdownTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DA2E3C0D99552068D8F142E /* GatewayMarkdownTests.swift */; };
 		4702C87B84BB4CFDF290192D /* ConversationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED9377B8855E3C402146A072 /* ConversationView.swift */; };
+		4FEC47D91487EE95C95E9D74 /* GatewayChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14CEA8DA8FC9F159500EB87F /* GatewayChatView.swift */; };
 		5551A5262C75F1E993B7FE64 /* OnboardingChecks.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF4D430361F8B365997DEB1A /* OnboardingChecks.swift */; };
+		5A1F4D141287CD6C515BF573 /* GatewaySessionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A4AF431B3DE03B25477443D /* GatewaySessionStore.swift */; };
+		6317311CC729AFA0418C5B7C /* GatewayMarkdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6CB6DCCC290369C17A0771D0 /* GatewayMarkdown.swift */; };
+		69469492DA5C4F4269462C58 /* GatewayLinkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 118A6E7F48E26DB4D121A3F6 /* GatewayLinkTests.swift */; };
+		6EE0625AD50E14E87C6B22E5 /* GatewayModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D75F405121AB716CB3DB3B9 /* GatewayModels.swift */; };
+		7480278BF94D95F081FBA25B /* GatewayAddressTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC0F4E209C798E4B396F1D92 /* GatewayAddressTests.swift */; };
 		7501752E4A01B396E9FEF9D7 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 332C8F5E93C0561DBF81EA6D /* PrivacyInfo.xcprivacy */; };
 		76729EC3A625BE34FE05F8B5 /* WorkspaceRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 388D4414D6FCBF28F43E6D08 /* WorkspaceRootView.swift */; };
+		7E00629AE1004A40B80A5C4E /* GatewayUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E64D280F2ED32D81F94507CB /* GatewayUITests.swift */; };
 		81DE2CA72D8707A0BDB979D2 /* CallSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 699603DAEE4B2F036A206697 /* CallSheet.swift */; };
 		89774F1637FD84C5F23D4795 /* DiagnosticsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F492AAD368CE85E91F7ACB1 /* DiagnosticsStore.swift */; };
+		908BAF57376B327D28D4B8E7 /* GatewayRemote.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9596BBB57763B692F4677455 /* GatewayRemote.swift */; };
 		957893A4511CCBEA94D1E991 /* AlanWorkspaceApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89C666E05FF981969BA6BC6B /* AlanWorkspaceApp.swift */; };
 		A394000E3BCA30523150BC45 /* WorkspaceTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96B5037979439E2A349C2237 /* WorkspaceTheme.swift */; };
 		AE7AD8C33467B7C1E8D46F67 /* ThirdPartyNotices.txt in Resources */ = {isa = PBXBuildFile; fileRef = 757F8CE9576A8AE2D81E61E8 /* ThirdPartyNotices.txt */; };
+		B15AF67CC6E1EC075135350F /* GatewayLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63E0C34D0835912CE8FE07FE /* GatewayLink.swift */; };
+		B25D0469774BF4429CEE172F /* GatewayJSON.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24A2607A5D711472283F6B33 /* GatewayJSON.swift */; };
+		B54914EED6A1BB1190FD33AE /* GatewayStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71A4300902C0365B7990577F /* GatewayStoreTests.swift */; };
 		B727A0DF4C5C3F0182CDE634 /* TelegramKeychain.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14C0A4B8EE652A21485C95D /* TelegramKeychain.swift */; };
 		B9DF5A289B09B55A6D3C0D44 /* OnboardingViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A045030A237B259347E9C37 /* OnboardingViews.swift */; };
+		BC77FADCFC0B88BBEB1D68A2 /* GatewayAddress.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2233454B9BBE1146474EF81A /* GatewayAddress.swift */; };
+		CA62F4320FF726BBC6FEAC19 /* GatewayStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 926438D9DCCB1987CEF977E1 /* GatewayStore.swift */; };
 		CB3CE6055508A392D8A16E44 /* WorkspaceLaunchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F3DB115A6925480AD6C790E9 /* WorkspaceLaunchTests.swift */; };
+		CCBBDC2859A72C656266F0E6 /* GatewayIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C261709DF39400DBC69F691 /* GatewayIntegrationTests.swift */; };
+		CF92A23F292A52E0783D6AF2 /* GatewayOpener.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5142EF2543CD3371451F907A /* GatewayOpener.swift */; };
+		D213B7383A23711F3FBDDDB2 /* GatewayWire.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68A9F89F970FB6B4CA122961 /* GatewayWire.swift */; };
 		D233D6F04E0B5F7A61419FD3 /* WorkspaceSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B20C55068C0B8BD553B95CC /* WorkspaceSettings.swift */; };
 		D45FA408AD1811720A4540C6 /* ComputerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49BBD95CA4DAA3B2F007F7AA /* ComputerView.swift */; };
 		E15BD70AEA0296C7A6BC3B82 /* OnboardingChecksTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE2EED5E62249066B47417DD /* OnboardingChecksTests.swift */; };
 		E386EEEEFB77893693F7D130 /* CallOriginPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4235538CCC550F10BC3EC573 /* CallOriginPolicyTests.swift */; };
+		E738110FFE1B88F8B5822D19 /* GatewayTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB32B3208873E1D089B6CB0C /* GatewayTestSupport.swift */; };
 		E90E6DB1FC857EEA71519801 /* TelegramModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C977EFD330E896BD84CFD26 /* TelegramModels.swift */; };
 		E94B9A8118F61B969D27223C /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = FC96F43107F9FE6A1832FF2E /* Assets.xcassets */; };
+		FA4B2B9529EDB0055F89D96F /* GatewaySettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B5221C526DD8424D29A39AD /* GatewaySettingsView.swift */; };
+		FE75B7C1ACC43C1855144FA2 /* GatewayHomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8589BD8BA227B7E305BAE1D /* GatewayHomeView.swift */; };
 		FF1C1798B0652B7CAD923003 /* CallWebContentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28295B1173C01ABBF7FA37B4 /* CallWebContentTests.swift */; };
 /* End PBXBuildFile section */
 
@@ -54,37 +77,60 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		118A6E7F48E26DB4D121A3F6 /* GatewayLinkTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayLinkTests.swift; sourceTree = "<group>"; };
+		14CEA8DA8FC9F159500EB87F /* GatewayChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayChatView.swift; sourceTree = "<group>"; };
+		1550656785AB39CE6B78BE6F /* GatewayOutbox.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayOutbox.swift; sourceTree = "<group>"; };
 		1B8781305D3F4E40930E8393 /* TelegramErrorText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelegramErrorText.swift; sourceTree = "<group>"; };
 		1FD3F25D86FEDD20F7A4E815 /* DiagnosticsStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsStoreTests.swift; sourceTree = "<group>"; };
+		2233454B9BBE1146474EF81A /* GatewayAddress.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayAddress.swift; sourceTree = "<group>"; };
+		24A2607A5D711472283F6B33 /* GatewayJSON.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayJSON.swift; sourceTree = "<group>"; };
 		24F2A64E9623B56C19845E75 /* TelegramMiniAppView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelegramMiniAppView.swift; sourceTree = "<group>"; };
 		28295B1173C01ABBF7FA37B4 /* CallWebContentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallWebContentTests.swift; sourceTree = "<group>"; };
 		332C8F5E93C0561DBF81EA6D /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		388D4414D6FCBF28F43E6D08 /* WorkspaceRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceRootView.swift; sourceTree = "<group>"; };
+		3A4AF431B3DE03B25477443D /* GatewaySessionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewaySessionStore.swift; sourceTree = "<group>"; };
+		3D75F405121AB716CB3DB3B9 /* GatewayModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayModels.swift; sourceTree = "<group>"; };
 		4235538CCC550F10BC3EC573 /* CallOriginPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallOriginPolicyTests.swift; sourceTree = "<group>"; };
 		4695E1A2C3D735F7BAD249F6 /* TelegramStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelegramStore.swift; sourceTree = "<group>"; };
 		49BBD95CA4DAA3B2F007F7AA /* ComputerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComputerView.swift; sourceTree = "<group>"; };
 		4B20C55068C0B8BD553B95CC /* WorkspaceSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceSettings.swift; sourceTree = "<group>"; };
+		5142EF2543CD3371451F907A /* GatewayOpener.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayOpener.swift; sourceTree = "<group>"; };
+		5B5221C526DD8424D29A39AD /* GatewaySettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewaySettingsView.swift; sourceTree = "<group>"; };
 		5BE46BDAF695DC941BEC5180 /* AgentListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentListView.swift; sourceTree = "<group>"; };
+		63E0C34D0835912CE8FE07FE /* GatewayLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayLink.swift; sourceTree = "<group>"; };
+		68A9F89F970FB6B4CA122961 /* GatewayWire.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayWire.swift; sourceTree = "<group>"; };
 		699603DAEE4B2F036A206697 /* CallSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallSheet.swift; sourceTree = "<group>"; };
+		6CB6DCCC290369C17A0771D0 /* GatewayMarkdown.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayMarkdown.swift; sourceTree = "<group>"; };
+		71A4300902C0365B7990577F /* GatewayStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayStoreTests.swift; sourceTree = "<group>"; };
 		74ABEA476EDC13D185306339 /* AlanWorkspaceTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = AlanWorkspaceTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		757F8CE9576A8AE2D81E61E8 /* ThirdPartyNotices.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = ThirdPartyNotices.txt; sourceTree = "<group>"; };
+		7B16689FE84453B992337FD4 /* GatewayOutboxTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayOutboxTests.swift; sourceTree = "<group>"; };
 		7C977EFD330E896BD84CFD26 /* TelegramModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelegramModels.swift; sourceTree = "<group>"; };
 		811600DA355EAF826AC24E3C /* WorkspaceSettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceSettingsTests.swift; sourceTree = "<group>"; };
 		885E8694695952E1A0B21044 /* AlanWorkspaceUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = AlanWorkspaceUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		89C666E05FF981969BA6BC6B /* AlanWorkspaceApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlanWorkspaceApp.swift; sourceTree = "<group>"; };
+		8C261709DF39400DBC69F691 /* GatewayIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayIntegrationTests.swift; sourceTree = "<group>"; };
+		926438D9DCCB1987CEF977E1 /* GatewayStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayStore.swift; sourceTree = "<group>"; };
+		9596BBB57763B692F4677455 /* GatewayRemote.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayRemote.swift; sourceTree = "<group>"; };
 		96B5037979439E2A349C2237 /* WorkspaceTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceTheme.swift; sourceTree = "<group>"; };
 		9A045030A237B259347E9C37 /* OnboardingViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingViews.swift; sourceTree = "<group>"; };
-		AE2EED5E62249066B47417DD /* OnboardingChecksTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingChecksTests.swift; sourceTree = "<group>"; };
+		9DA2E3C0D99552068D8F142E /* GatewayMarkdownTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayMarkdownTests.swift; sourceTree = "<group>"; };
 		9F492AAD368CE85E91F7ACB1 /* DiagnosticsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsStore.swift; sourceTree = "<group>"; };
+		AE2EED5E62249066B47417DD /* OnboardingChecksTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingChecksTests.swift; sourceTree = "<group>"; };
 		AFBF6A1C8690784EBDB03C36 /* TelegramModelMapperTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelegramModelMapperTests.swift; sourceTree = "<group>"; };
+		E64D280F2ED32D81F94507CB /* GatewayUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayUITests.swift; sourceTree = "<group>"; };
+		EC0F4E209C798E4B396F1D92 /* GatewayAddressTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayAddressTests.swift; sourceTree = "<group>"; };
 		ED9377B8855E3C402146A072 /* ConversationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationView.swift; sourceTree = "<group>"; };
 		EE5BAAC77B46FEEF2B680965 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		F14C0A4B8EE652A21485C95D /* TelegramKeychain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelegramKeychain.swift; sourceTree = "<group>"; };
+		F333CBC839B7FBB723069538 /* GatewayWireTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayWireTests.swift; sourceTree = "<group>"; };
 		F3DB115A6925480AD6C790E9 /* WorkspaceLaunchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceLaunchTests.swift; sourceTree = "<group>"; };
 		F7D8DC409B45AB214705888A /* AlanWorkspace.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = AlanWorkspace.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		F8589BD8BA227B7E305BAE1D /* GatewayHomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayHomeView.swift; sourceTree = "<group>"; };
+		FB32B3208873E1D089B6CB0C /* GatewayTestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayTestSupport.swift; sourceTree = "<group>"; };
 		FC96F43107F9FE6A1832FF2E /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		FF4D430361F8B365997DEB1A /* OnboardingChecks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingChecks.swift; sourceTree = "<group>"; };
-		"TEMP_002A382F-196C-4274-BDCD-79ED7A2D5B6D" /* Configuration.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Configuration.xcconfig; sourceTree = "<group>"; };
+		"TEMP_FAD47E16-F90E-4CB8-B193-B0B0DF93D56F" /* Configuration.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Configuration.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -151,6 +197,7 @@
 		887CC86F4943DEDAA85B614A /* AlanWorkspaceUITests */ = {
 			isa = PBXGroup;
 			children = (
+				E64D280F2ED32D81F94507CB /* GatewayUITests.swift */,
 				F3DB115A6925480AD6C790E9 /* WorkspaceLaunchTests.swift */,
 			);
 			path = AlanWorkspaceUITests;
@@ -165,13 +212,39 @@
 			path = Calls;
 			sourceTree = "<group>";
 		};
+		A6BC0E3CE51D6BE54B05535E /* Gateway */ = {
+			isa = PBXGroup;
+			children = (
+				2233454B9BBE1146474EF81A /* GatewayAddress.swift */,
+				24A2607A5D711472283F6B33 /* GatewayJSON.swift */,
+				63E0C34D0835912CE8FE07FE /* GatewayLink.swift */,
+				6CB6DCCC290369C17A0771D0 /* GatewayMarkdown.swift */,
+				3D75F405121AB716CB3DB3B9 /* GatewayModels.swift */,
+				5142EF2543CD3371451F907A /* GatewayOpener.swift */,
+				1550656785AB39CE6B78BE6F /* GatewayOutbox.swift */,
+				9596BBB57763B692F4677455 /* GatewayRemote.swift */,
+				3A4AF431B3DE03B25477443D /* GatewaySessionStore.swift */,
+				926438D9DCCB1987CEF977E1 /* GatewayStore.swift */,
+				68A9F89F970FB6B4CA122961 /* GatewayWire.swift */,
+			);
+			path = Gateway;
+			sourceTree = "<group>";
+		};
 		AC0F482DFAED5E357CE6D11B /* AlanWorkspaceTests */ = {
 			isa = PBXGroup;
 			children = (
 				4235538CCC550F10BC3EC573 /* CallOriginPolicyTests.swift */,
 				28295B1173C01ABBF7FA37B4 /* CallWebContentTests.swift */,
-				AE2EED5E62249066B47417DD /* OnboardingChecksTests.swift */,
 				1FD3F25D86FEDD20F7A4E815 /* DiagnosticsStoreTests.swift */,
+				EC0F4E209C798E4B396F1D92 /* GatewayAddressTests.swift */,
+				8C261709DF39400DBC69F691 /* GatewayIntegrationTests.swift */,
+				118A6E7F48E26DB4D121A3F6 /* GatewayLinkTests.swift */,
+				9DA2E3C0D99552068D8F142E /* GatewayMarkdownTests.swift */,
+				7B16689FE84453B992337FD4 /* GatewayOutboxTests.swift */,
+				71A4300902C0365B7990577F /* GatewayStoreTests.swift */,
+				FB32B3208873E1D089B6CB0C /* GatewayTestSupport.swift */,
+				F333CBC839B7FBB723069538 /* GatewayWireTests.swift */,
+				AE2EED5E62249066B47417DD /* OnboardingChecksTests.swift */,
 				AFBF6A1C8690784EBDB03C36 /* TelegramModelMapperTests.swift */,
 				811600DA355EAF826AC24E3C /* WorkspaceSettingsTests.swift */,
 			);
@@ -192,6 +265,9 @@
 				5BE46BDAF695DC941BEC5180 /* AgentListView.swift */,
 				49BBD95CA4DAA3B2F007F7AA /* ComputerView.swift */,
 				ED9377B8855E3C402146A072 /* ConversationView.swift */,
+				14CEA8DA8FC9F159500EB87F /* GatewayChatView.swift */,
+				F8589BD8BA227B7E305BAE1D /* GatewayHomeView.swift */,
+				5B5221C526DD8424D29A39AD /* GatewaySettingsView.swift */,
 				388D4414D6FCBF28F43E6D08 /* WorkspaceRootView.swift */,
 			);
 			path = Views;
@@ -214,6 +290,7 @@
 				EE5BAAC77B46FEEF2B680965 /* Info.plist */,
 				AC578F120A75D9A69BAB45A6 /* App */,
 				965B221FFC17B1A748CA92AF /* Calls */,
+				A6BC0E3CE51D6BE54B05535E /* Gateway */,
 				25754D5AA538C1544A07638D /* Onboarding */,
 				54144C0E8F087D61A50FF4A2 /* Resources */,
 				6BCCADA69AF3C7563F4AC7D3 /* Support */,
@@ -223,10 +300,10 @@
 			path = AlanWorkspace;
 			sourceTree = "<group>";
 		};
-		"TEMP_E4F0673F-A3D1-4A1A-BE2E-B917E318355D" /* ios */ = {
+		"TEMP_B9EE98DB-8B34-46A1-9023-58260AD8204E" /* ios */ = {
 			isa = PBXGroup;
 			children = (
-				"TEMP_002A382F-196C-4274-BDCD-79ED7A2D5B6D" /* Configuration.xcconfig */,
+				"TEMP_FAD47E16-F90E-4CB8-B193-B0B0DF93D56F" /* Configuration.xcconfig */,
 			);
 			path = ios;
 			sourceTree = "<group>";
@@ -353,6 +430,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				7E00629AE1004A40B80A5C4E /* GatewayUITests.swift in Sources */,
 				CB3CE6055508A392D8A16E44 /* WorkspaceLaunchTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -363,8 +441,16 @@
 			files = (
 				E386EEEEFB77893693F7D130 /* CallOriginPolicyTests.swift in Sources */,
 				FF1C1798B0652B7CAD923003 /* CallWebContentTests.swift in Sources */,
-				E15BD70AEA0296C7A6BC3B82 /* OnboardingChecksTests.swift in Sources */,
 				062D5F6B7025E5D125D7A716 /* DiagnosticsStoreTests.swift in Sources */,
+				7480278BF94D95F081FBA25B /* GatewayAddressTests.swift in Sources */,
+				CCBBDC2859A72C656266F0E6 /* GatewayIntegrationTests.swift in Sources */,
+				69469492DA5C4F4269462C58 /* GatewayLinkTests.swift in Sources */,
+				46AA716747B99325C1CB92E1 /* GatewayMarkdownTests.swift in Sources */,
+				0832BEB3286BC64939EFE606 /* GatewayOutboxTests.swift in Sources */,
+				B54914EED6A1BB1190FD33AE /* GatewayStoreTests.swift in Sources */,
+				E738110FFE1B88F8B5822D19 /* GatewayTestSupport.swift in Sources */,
+				10D5D7D23638DC1DE62F1F7B /* GatewayWireTests.swift in Sources */,
+				E15BD70AEA0296C7A6BC3B82 /* OnboardingChecksTests.swift in Sources */,
 				309F19D03DC3422BDE3A6E77 /* TelegramModelMapperTests.swift in Sources */,
 				00739F3960B63B1ECA42F02B /* WorkspaceSettingsTests.swift in Sources */,
 			);
@@ -379,10 +465,24 @@
 				81DE2CA72D8707A0BDB979D2 /* CallSheet.swift in Sources */,
 				D45FA408AD1811720A4540C6 /* ComputerView.swift in Sources */,
 				4702C87B84BB4CFDF290192D /* ConversationView.swift in Sources */,
+				89774F1637FD84C5F23D4795 /* DiagnosticsStore.swift in Sources */,
+				BC77FADCFC0B88BBEB1D68A2 /* GatewayAddress.swift in Sources */,
+				4FEC47D91487EE95C95E9D74 /* GatewayChatView.swift in Sources */,
+				FE75B7C1ACC43C1855144FA2 /* GatewayHomeView.swift in Sources */,
+				B25D0469774BF4429CEE172F /* GatewayJSON.swift in Sources */,
+				B15AF67CC6E1EC075135350F /* GatewayLink.swift in Sources */,
+				6317311CC729AFA0418C5B7C /* GatewayMarkdown.swift in Sources */,
+				6EE0625AD50E14E87C6B22E5 /* GatewayModels.swift in Sources */,
+				CF92A23F292A52E0783D6AF2 /* GatewayOpener.swift in Sources */,
+				37F6D9C152EDBD1A9C59F022 /* GatewayOutbox.swift in Sources */,
+				908BAF57376B327D28D4B8E7 /* GatewayRemote.swift in Sources */,
+				5A1F4D141287CD6C515BF573 /* GatewaySessionStore.swift in Sources */,
+				FA4B2B9529EDB0055F89D96F /* GatewaySettingsView.swift in Sources */,
+				CA62F4320FF726BBC6FEAC19 /* GatewayStore.swift in Sources */,
+				D213B7383A23711F3FBDDDB2 /* GatewayWire.swift in Sources */,
 				5551A5262C75F1E993B7FE64 /* OnboardingChecks.swift in Sources */,
 				B9DF5A289B09B55A6D3C0D44 /* OnboardingViews.swift in Sources */,
 				3D9C8EF741E323485CAF2CC6 /* TelegramErrorText.swift in Sources */,
-				89774F1637FD84C5F23D4795 /* DiagnosticsStore.swift in Sources */,
 				B727A0DF4C5C3F0182CDE634 /* TelegramKeychain.swift in Sources */,
 				270D178306AC87286B87AEAF /* TelegramMiniAppView.swift in Sources */,
 				E90E6DB1FC857EEA71519801 /* TelegramModels.swift in Sources */,
@@ -496,7 +596,7 @@
 		};
 		46184AB5F451686C1A76CAED /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_002A382F-196C-4274-BDCD-79ED7A2D5B6D" /* Configuration.xcconfig */;
+			baseConfigurationReference = "TEMP_FAD47E16-F90E-4CB8-B193-B0B0DF93D56F" /* Configuration.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
@@ -523,7 +623,7 @@
 		};
 		4720CB03BE137C6103C524E6 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_002A382F-196C-4274-BDCD-79ED7A2D5B6D" /* Configuration.xcconfig */;
+			baseConfigurationReference = "TEMP_FAD47E16-F90E-4CB8-B193-B0B0DF93D56F" /* Configuration.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
