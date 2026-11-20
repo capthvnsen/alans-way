@@ -73,6 +73,50 @@ public struct TelegramButton: Identifiable, Equatable {
     }
 }
 
+/// One Telegram formatting entity. `offset` and `length` count UTF-16 code units, as Telegram sends them.
+public struct TelegramTextEntity: Equatable {
+    public enum Kind: Equatable { case bold, italic, underline, strikethrough, code, link(URL) }
+    public let offset: Int
+    public let length: Int
+    public let kind: Kind
+
+    public init(offset: Int, length: Int, kind: Kind) {
+        self.offset = offset
+        self.length = length
+        self.kind = kind
+    }
+}
+
+enum TelegramText {
+    /// Plain text plus Telegram's own entities. Never parsed as Markdown, so a stray `*` stays a `*`.
+    static func attributed(_ text: String, entities: [TelegramTextEntity]) -> AttributedString {
+        var result = AttributedString(text)
+        let whole = NSRange(location: 0, length: (text as NSString).length)
+        for entity in entities {
+            let range = NSRange(location: entity.offset, length: entity.length)
+            guard entity.length > 0, NSIntersectionRange(range, whole) == range,
+                  let stringRange = Range(range, in: text),
+                  let target = Range(stringRange, in: result) else { continue }
+            switch entity.kind {
+            case .bold: addIntent(.stronglyEmphasized, to: target, in: &result)
+            case .italic: addIntent(.emphasized, to: target, in: &result)
+            case .code: addIntent(.code, to: target, in: &result)
+            case .strikethrough: addIntent(.strikethrough, to: target, in: &result)
+            case .underline: result[target].underlineStyle = .single
+            case .link(let url): result[target].link = url
+            }
+        }
+        return result
+    }
+
+    private static func addIntent(_ intent: InlinePresentationIntent, to range: Range<AttributedString.Index>,
+                                  in text: inout AttributedString) {
+        for run in text[range].runs {
+            text[run.range].inlinePresentationIntent = (run.inlinePresentationIntent ?? []).union(intent)
+        }
+    }
+}
+
 public struct TelegramMessage: Identifiable, Equatable {
     public let id: Int64
     public let chatID: Int64
@@ -83,10 +127,11 @@ public struct TelegramMessage: Identifiable, Equatable {
     public var text: String
     public var attachment: TelegramAttachment?
     public var buttonRows: [[TelegramButton]]
+    public var entities: [TelegramTextEntity]
 
     public init(id: Int64, chatID: Int64, senderID: Int64? = nil, senderName: String, isOutgoing: Bool,
                 date: Date, text: String, attachment: TelegramAttachment? = nil,
-                buttonRows: [[TelegramButton]] = []) {
+                buttonRows: [[TelegramButton]] = [], entities: [TelegramTextEntity] = []) {
         self.id = id
         self.chatID = chatID
         self.senderID = senderID
@@ -96,6 +141,7 @@ public struct TelegramMessage: Identifiable, Equatable {
         self.text = text
         self.attachment = attachment
         self.buttonRows = buttonRows
+        self.entities = entities
     }
 }
 

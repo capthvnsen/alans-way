@@ -131,6 +131,38 @@ final class TelegramModelMapperTests: XCTestCase {
         XCTAssertFalse(TelegramHistory.merge(page: [], into: short.messages).hasMore)
     }
 
+    func testTelegramEntitiesBecomeStylesAndLinksWhileStrayAsterisksStayPlain() throws {
+        let text = "Compute 2*3*4 then bold www.example.com and docs"
+        let content = MessageContent.messageText(MessageText(linkPreview: nil, linkPreviewOptions: nil, text: FormattedText(
+            entities: [
+                TextEntity(length: 4, offset: 19, type: .textEntityTypeBold),
+                TextEntity(length: 15, offset: 24, type: .textEntityTypeUrl),
+                TextEntity(length: 4, offset: 44, type: .textEntityTypeTextUrl(TextEntityTypeTextUrl(url: "https://example.com/docs"))),
+                TextEntity(length: 3, offset: 0, type: .textEntityTypeBotCommand),
+            ], text: text)))
+
+        let entities = TelegramModelMapper.entities(content)
+        XCTAssertEqual(entities.map(\.kind), [.bold, .link(URL(string: "https://www.example.com")!), .link(URL(string: "https://example.com/docs")!)])
+
+        let styled = TelegramText.attributed(text, entities: entities)
+        XCTAssertEqual(String(styled.characters), text, "no characters are added, so 2*3*4 is not italicised")
+        let bold = try XCTUnwrap(styled.runs.first { $0.inlinePresentationIntent?.contains(.stronglyEmphasized) == true })
+        XCTAssertEqual(String(styled[bold.range].characters), "bold")
+        XCTAssertEqual(styled.runs.compactMap(\.link).map(\.absoluteString), ["https://www.example.com", "https://example.com/docs"])
+        XCTAssertNil(styled.runs.first { $0.inlinePresentationIntent?.contains(.emphasized) == true })
+    }
+
+    func testEntitiesOutsideTheTextAndUnsafeLinkSchemesAreIgnored() {
+        let styled = TelegramText.attributed("héllo 😀 world", entities: [
+            TelegramTextEntity(offset: 100, length: 5, kind: .bold),
+            TelegramTextEntity(offset: 6, length: 2, kind: .italic),
+        ])
+        XCTAssertEqual(styled.runs.filter { $0.inlinePresentationIntent != nil }.map { String(styled[$0.range].characters) }, ["😀"])
+        XCTAssertNil(TelegramModelMapper.linkURL("javascript:alert(1)"))
+        XCTAssertNil(TelegramModelMapper.linkURL("tg://resolve?domain=x"))
+        XCTAssertEqual(TelegramModelMapper.linkURL("example.com")?.absoluteString, "https://example.com")
+    }
+
     func testRefreshAfterAnOfflineGapDropsOldCacheInsteadOfShowingAHole() async throws {
         // Cache: 10, 20 (old) and 90 (pushed by updateChatLastMessage). Server: 30...90 in two pages of newest-first.
         let cache = [text(id: 10), text(id: 20), text(id: 90)]

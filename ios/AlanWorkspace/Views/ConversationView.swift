@@ -255,7 +255,7 @@ private struct MessageBubble: View {
                         attachmentView(attachment)
                     }
                     if !message.text.isEmpty {
-                        Text(LocalizedStringKey(message.text))
+                        Text(TelegramText.attributed(message.text, entities: message.entities))
                             .font(.system(size: textSize)).lineSpacing(5).textSelection(.enabled)
                             .tint(WorkspaceTheme.mint)
                     }

@@ -517,6 +517,7 @@ public final class TelegramStore {
                 let mapped = TelegramModelMapper.content(value.newContent)
                 messages[index].text = mapped.0
                 messages[index].attachment = mapped.1
+                messages[index].entities = TelegramModelMapper.entities(value.newContent)
                 messagesByChat[value.chatId] = messages
                 scheduleAttachmentDownload(messages[index])
             }
@@ -762,8 +763,56 @@ enum TelegramModelMapper {
             date: Date(timeIntervalSince1970: TimeInterval(message.date)),
             text: mapped.0,
             attachment: mapped.1,
-            buttonRows: buttons(message.replyMarkup)
+            buttonRows: buttons(message.replyMarkup),
+            entities: entities(message.content)
         )
+    }
+
+    /// Telegram's own formatting for the text or caption, with bare URLs and e-mail addresses made tappable.
+    static func entities(_ content: MessageContent) -> [TelegramTextEntity] {
+        let formatted: FormattedText
+        switch content {
+        case .messageText(let value): formatted = value.text
+        case .messagePhoto(let value): formatted = value.caption
+        case .messageVideo(let value): formatted = value.caption
+        case .messageVoiceNote(let value): formatted = value.caption
+        case .messageAudio(let value): formatted = value.caption
+        case .messageDocument(let value): formatted = value.caption
+        case .messageAnimation(let value): formatted = value.caption
+        default: return []
+        }
+        let text = formatted.text as NSString
+        return formatted.entities.compactMap { entity in
+            let kind: TelegramTextEntity.Kind
+            switch entity.type {
+            case .textEntityTypeBold: kind = .bold
+            case .textEntityTypeItalic: kind = .italic
+            case .textEntityTypeUnderline: kind = .underline
+            case .textEntityTypeStrikethrough: kind = .strikethrough
+            case .textEntityTypeCode, .textEntityTypePre, .textEntityTypePreCode: kind = .code
+            case .textEntityTypeTextUrl(let value):
+                guard let url = linkURL(value.url) else { return nil }
+                kind = .link(url)
+            case .textEntityTypeUrl:
+                guard NSMaxRange(NSRange(location: entity.offset, length: entity.length)) <= text.length,
+                      let url = linkURL(text.substring(with: NSRange(location: entity.offset, length: entity.length))) else { return nil }
+                kind = .link(url)
+            case .textEntityTypeEmailAddress:
+                guard NSMaxRange(NSRange(location: entity.offset, length: entity.length)) <= text.length,
+                      let url = linkURL("mailto:" + text.substring(with: NSRange(location: entity.offset, length: entity.length))) else { return nil }
+                kind = .link(url)
+            default: return nil
+            }
+            return TelegramTextEntity(offset: entity.offset, length: entity.length, kind: kind)
+        }
+    }
+
+    /// A tappable link only for web, mail and phone addresses; a bare `example.com` is read as https.
+    static func linkURL(_ raw: String) -> URL? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let full = trimmed.contains(":") ? trimmed : "https://" + trimmed
+        guard let url = URL(string: full), ["http", "https", "mailto", "tel"].contains(url.scheme?.lowercased() ?? "") else { return nil }
+        return url
     }
 
     static func content(_ content: MessageContent) -> (String, TelegramAttachment?) {
