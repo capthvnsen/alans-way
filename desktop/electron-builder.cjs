@@ -23,8 +23,10 @@ function createConfig(env) {
   // electron-builder imports CSC_LINK into a temp keychain and discovers the
   // "Developer ID Application" identity itself, so a signed build leaves
   // mac.identity unset. Empty strings (unset fork secrets) mean ad-hoc.
-  const signed = Boolean(e.CSC_LINK && e.CSC_KEY_PASSWORD);
-  const notarize = signed && Boolean(e.APPLE_ID && e.APPLE_APP_SPECIFIC_PASSWORD && e.APPLE_TEAM_ID);
+  // Local releases (scripts/release-mac.sh) instead name a login-keychain
+  // identity (CSC_NAME) and a notarytool keychain profile.
+  const signed = Boolean((e.CSC_LINK && e.CSC_KEY_PASSWORD) || e.CSC_NAME);
+  const notarize = signed && Boolean((e.APPLE_ID && e.APPLE_APP_SPECIFIC_PASSWORD && e.APPLE_TEAM_ID) || e.APPLE_KEYCHAIN_PROFILE);
   return {
     appId: 'app.alans-way.localapp',
     productName: 'alans-way-localapp',
@@ -42,6 +44,7 @@ function createConfig(env) {
       '!dist{,/**}',
       '!screenshots{,/**}',
       '!scripts/setup-signing-secrets.sh',
+      '!scripts/release-mac.sh',
     ],
     publish: PUBLISH,
     // The paid-computer link is alansway://claim?token=…; without a declared

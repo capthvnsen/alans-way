@@ -48,6 +48,17 @@ test('with all secrets the mac build signs, notarizes and staples', () => {
   assert.equal(config.mac.entitlementsInherit, config.mac.entitlements);
 });
 
+test('a local keychain identity signs, and a notarytool profile notarizes', () => {
+  const signedOnly = createConfig({ CSC_NAME: 'Example LLC (TEAMID00000)' });
+  assert.equal(signedOnly.mac.hardenedRuntime, true);
+  assert.equal(signedOnly.mac.notarize, false);
+  const config = createConfig({ CSC_NAME: 'Example LLC (TEAMID00000)', APPLE_KEYCHAIN_PROFILE: 'alans-way-notary' });
+  assert.equal(config.mac.identity, undefined);
+  assert.equal(config.mac.notarize, true);
+  assert.equal(typeof config.afterSign, 'function');
+  assert.equal(createConfig({ APPLE_KEYCHAIN_PROFILE: 'alans-way-notary' }).mac.identity, '-', 'a profile without an identity stays ad-hoc');
+});
+
 test('the mac build ships a zip for electron-updater alongside the dmg', () => {
   const targets = createConfig({}).mac.target.map((entry) => entry.target).sort();
   assert.deepEqual(targets, ['dmg', 'zip']);
