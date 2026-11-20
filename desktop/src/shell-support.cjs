@@ -72,6 +72,20 @@ function coalesce(fn, ms) {
   return schedule;
 }
 
+// Runs `task` once `prev` settles and gives up on it after `ms`: a task that never settles (a page stuck in a script loop, a
+// capture the compositor never answers) must not hold everything queued behind it. The task itself is not cancelled;
+// onTimeout lets it stop at its next checkpoint. `tail` is what the next task chains on and never rejects.
+function queueWithDeadline(prev, task, ms, onTimeout = () => {}) {
+  const work = prev.then(() => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      try { onTimeout(); } catch {}
+      reject(Object.assign(new Error('The tab did not answer in time, so its queue was released. Read the tab again before acting.'), { status: 503 }));
+    }, ms);
+    Promise.resolve().then(task).then(resolve, reject).finally(() => clearTimeout(timer));
+  }));
+  return { work, tail: work.catch(() => {}) };
+}
+
 // Debounced, change-detecting writer: `snapshot()` returns the object to
 // persist; nothing is written when it serializes the same as the last write.
 function createSaver({ snapshot, write, onError = () => {}, delayMs = 250 }) {
@@ -214,4 +228,4 @@ const keepBots = (map, ids) => Object.fromEntries(Object.entries(map || {}).filt
 const plainLine = (text) => String(text || '').replace(/```[\s\S]*?(```|$)/g, ' ').replace(/^::.*$/gm, ' ').replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
   .replace(/^\s*\|?[\s:|-]*-{3,}[\s:|-]*$/gm, ' ').replace(/[#>*_`|~]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120);
 
-module.exports = { resolveChatSurface, usableSurfaces, surfaceForBot, inboxRow, canvasStripTabs, keepBots, plainLine, writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange, tailscaleSshHost };
+module.exports = { queueWithDeadline, resolveChatSurface, usableSurfaces, surfaceForBot, inboxRow, canvasStripTabs, keepBots, plainLine, writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange, tailscaleSshHost };

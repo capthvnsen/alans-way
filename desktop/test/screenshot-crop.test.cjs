@@ -26,6 +26,7 @@ test('the app capture path returns the same crop and viewport used for capture',
   const commands = [], host = {};
   const captureTab = require('node:vm').runInNewContext(source.slice(source.indexOf('async function captureTab('), source.indexOf('const EMPTY_EFFECT')) + '\ncaptureTab;', {
     backgroundCaptureQueue: Promise.resolve(), win: host, screenshotClip,
+    queueWithDeadline: require('../src/shell-support.cjs').queueWithDeadline, withTimeout: require('../src/agent-input.cjs').withTimeout, CAPTURE_MS: 20000,
     boundedJs: async () => viewport,
     browserCommand: async (_tab, method, params) => { commands.push({ method, params }); return { data: 'fixture-image' }; },
   });

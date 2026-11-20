@@ -375,6 +375,7 @@ test('desktop screenshot fallback uses the visual viewport and supports pages wi
     let clip;
     const capture = vm.runInNewContext(`${captureSource}; captureTab`, {
       backgroundCaptureQueue: Promise.resolve(), win: 'visible-host', screenshotClip,
+      queueWithDeadline: require('../src/shell-support.cjs').queueWithDeadline, withTimeout: require('../src/agent-input.cjs').withTimeout, CAPTURE_MS: 20000,
       boundedJs: async (_wc, code) => vm.runInNewContext(code, page),
       browserCommand: async (_tab, method, params) => { assert.equal(method, 'Page.captureScreenshot'); clip = params.clip; return { data: PNG }; },
     });

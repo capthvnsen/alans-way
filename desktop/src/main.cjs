@@ -12,7 +12,7 @@ const crypto = require('node:crypto');
 const { spawn, execFileSync } = require('node:child_process');
 const { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, faviconQueue, redactTabForBot, continuedOnVm, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor: requireActorCore, requireAgentRead, requireAgentClaim, takeoverDelay, reviewedHandoff, isAuthorized, sanitizeBots, errorMessage, followVmRemoteUrl, handbackRequest, liveHandback, nextHandback, dialogAnswer, answerDialog, challengeReply, captchaHandback, captchaWatchStep, cdpChallengeSafe } = require('./core.cjs');
 const { createAvatarStore, AVATAR_SCHEME } = require('./avatar-store.cjs');
-const { resolveChatSurface, usableSurfaces, surfaceForBot, inboxRow, canvasStripTabs, keepBots, writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange, tailscaleSshHost } = require('./shell-support.cjs');
+const { queueWithDeadline, resolveChatSurface, usableSurfaces, surfaceForBot, inboxRow, canvasStripTabs, keepBots, writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange, tailscaleSshHost } = require('./shell-support.cjs');
 const { buildAgentPrompt } = require('./agent-prompt.cjs');
 const { shouldOnboard, pinOnboarding, cloudStep, nextCloudStep, setCloudStep } = require('./onboarding.cjs');
 const cloudClaim = require('./cloud-claim.cjs');
@@ -40,7 +40,7 @@ const { createGatewayApiFactory } = require('./gateway-api.cjs');
 const { createVmUpdater, vmTargets, snoozeUntil, vmRetryState, vmCheckEntry, pruneVmUpdates, shouldShowUpdatePopup, hermesUpdateDetail, updateLocked, LOCAL_TARGET } = require('./vm-update.cjs');
 const { latestPluginTag, latestHostRelease, stableHostTarget, versionRecord, describeVersions, runSteps, summarizeRun, reportText, reportDeliveryText, deliverPendingUpdateReport, restartWarning, pluginStepResult, runLogText } = require('./update-all.cjs');
 const { describeBuild, readBuildInfo } = require('./build-channel.cjs');
-const { createAgentInput, PREFLIGHT_READY, APPROVED, refuseChallenge, tintScript, botAccent, boundedJs, readJs, frameOf, INPUT_ACTIONS } = require('./agent-input.cjs');
+const { createAgentInput, withTimeout, PREFLIGHT_READY, APPROVED, refuseChallenge, tintScript, botAccent, boundedJs, readJs, frameOf, INPUT_ACTIONS } = require('./agent-input.cjs');
 const { createHermesHub } = require('./hermes-hub.cjs');
 const { createActivityTracker } = require('./activity.cjs');
 const { createSitePermissions } = require('./site-permissions.cjs');
@@ -159,6 +159,8 @@ const BATCH_BUDGET_MS = 50000;
 const batchFlow = require('./batch-flow.cjs');
 const FLOW = Symbol('batch-flow');
 const QUIT_SAVE_MS = 8000;
+// What one queued tab task may hold the tab's queue for. An action may run a 50s batch plus a 30s wait, and the connector gives up at 90s.
+const TAB_ACTION_MS = 100000, TAB_READ_MS = 45000, CAPTURE_MS = 20000, CDP_COMMAND_MS = 15000;
 const NAVIGATE_PARSE_MS = 3000;
 const OPEN_PARSE_MS = 8000;
 // A snapshot waits this long for a still-parsing document; the wait ends at DOMContentLoaded.
@@ -2921,7 +2923,7 @@ const intParam = (url, key, min, max) => {
   return Math.max(min, Math.min(max, value));
 };
 async function snapshot(tab, opts = {}) {
-  const work = tab.queue.then(async () => {
+  const { work, tail } = queueWithDeadline(tab.queue, async () => {
     requireAgentRead(tab);
     const generation = ++tab.generation;
     let timer;
@@ -2939,8 +2941,8 @@ async function snapshot(tab, opts = {}) {
     requireAgentRead(tab);
     const settled = settleSnapshot(tab, result, generation, opts.since);
     return { ...settled, ...handleChallenge(tab, settled.challenge), tab: describeTab(tab, true) };
-  });
-  tab.queue = work.catch(() => {});
+  }, TAB_READ_MS);
+  tab.queue = tail;
   return work;
 }
 async function navigateVps(id,url) {
@@ -3037,10 +3039,10 @@ function waitForNavigationCommit(wc, load, timeout = 15000) {
 function browserCommand(tab, method, params) {
   const wc = tab.view.webContents;
   if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
-  return wc.debugger.sendCommand(method, params);
+  return withTimeout(wc.debugger.sendCommand(method, params), CDP_COMMAND_MS);
 }
 async function captureTab(tab, { format = 'png', quality = 80, maxWidth = 0, crop = null } = {}) {
-  const capture = backgroundCaptureQueue.then(async () => {
+  const { work: capture, tail } = queueWithDeadline(backgroundCaptureQueue, async () => {
     const wc = tab.view.webContents;
     const viewport = await boundedJs(wc, '({ width: globalThis.visualViewport?.width ?? innerWidth, height: globalThis.visualViewport?.height ?? innerHeight, pageLeft: globalThis.visualViewport?.pageLeft ?? scrollX, pageTop: globalThis.visualViewport?.pageTop ?? scrollY, deviceScaleFactor: devicePixelRatio })');
     const { clip, crop: region } = screenshotClip(viewport, crop, maxWidth);
@@ -3054,7 +3056,7 @@ async function captureTab(tab, { format = 'png', quality = 80, maxWidth = 0, cro
       if (crop !== null || format === 'webp') return viaDevTools(format);
       // capturePage copies the last composited frame and fails (UnknownVizError)
       // when a just-opened surface has not produced one; DevTools renders one.
-      let image = await wc.capturePage(undefined, { stayHidden: true }).catch(() => null);
+      let image = await withTimeout(wc.capturePage(undefined, { stayHidden: true }), 8000).catch(() => null);
       if (!image || image.isEmpty()) return viaDevTools(format);
       if (maxWidth && image.getSize().width > maxWidth) image = image.resize({ width: maxWidth });
       return (format === 'jpeg' ? image.toJPEG(quality) : image.toPNG()).toString('base64');
@@ -3072,8 +3074,8 @@ async function captureTab(tab, { format = 'png', quality = 80, maxWidth = 0, cro
       return await result();
     }
     finally { if (!heldFocus && !wc.isDestroyed()) await browserCommand(tab, 'Emulation.setFocusEmulationEnabled', { enabled: false }).catch(() => {}); }
-  });
-  backgroundCaptureQueue = capture.catch(() => {});
+  }, CAPTURE_MS);
+  backgroundCaptureQueue = tail;
   return capture;
 }
 const EMPTY_EFFECT = { navigated: false, changed: false, text: '' };
@@ -3500,7 +3502,7 @@ function startApi() {
         const quality = intParam(url, 'quality', 1, 100) ?? 50;
         const maxWidth = intParam(url, 'maxWidth', 1, 10000) ?? 960;
         const rawCrop = url.searchParams.get('crop');
-        const capture = tab.queue.then(async () => {
+        const { work: capture, tail } = queueWithDeadline(tab.queue, async () => {
           // Reads are gated again inside the queue so a takeover while this
           // capture waited comes back 409, not a last page peek.
           requireAgentRead(tab);
@@ -3508,8 +3510,8 @@ function startApi() {
           const shot = await captureTab(tab, { format, quality, maxWidth, crop: rawCrop });
           requireAgentRead(tab);
           return shot;
-        });
-        tab.queue = capture.catch(() => {});
+        }, TAB_READ_MS + CAPTURE_MS);
+        tab.queue = tail;
         const { base64, viewport, crop } = await capture;
         return send(200, { mimeType: { jpeg: 'image/jpeg', webp: 'image/webp', png: 'image/png' }[format], base64, viewport, ...(crop ? { crop } : {}), tab: describeTab(tab, true) });
       }
@@ -3521,7 +3523,8 @@ function startApi() {
         // queued action run later against whatever the page became.
         let closed = false;
         res.on('close', () => { if (!res.writableFinished) closed = true; });
-        const action = tab.queue.then(async () => {
+        // A deadline marks the request closed too, so the abandoned action's remaining steps stop instead of landing late.
+        const { work: action, tail } = queueWithDeadline(tab.queue, async () => {
           if (closed) throw Object.assign(new Error('The request was closed before this action started.'), { status: 499 });
           // A malformed action must not cost the human their tab.
           if (!body || typeof body !== 'object' || typeof body.action !== 'string') throw Object.assign(new Error('action is required.'), { status: 400 });
@@ -3567,9 +3570,9 @@ function startApi() {
             if (([400, 403, 409].includes(error?.status) || error?.code === 'stale_ref') && unrun()) giveBack();
             throw takeoverError(error);
           } finally { if (!wc.isDestroyed()) wc.off('did-start-navigation', onMove); }
-        })
-          .finally(() => { tab.pendingActions--; tab.lastAgentActivity = Date.now(); });
-        tab.queue = action.catch(() => {});
+        }, TAB_ACTION_MS, () => { closed = true; });
+        action.then(() => {}, () => {}).finally(() => { tab.pendingActions--; tab.lastAgentActivity = Date.now(); });
+        tab.queue = tail;
         const result = await action;
         // The bot is acting on the tab again; human_returned has done its job.
         if (tab.handback?.state === 'human_returned') { tab.handback = null; broadcast(); }
