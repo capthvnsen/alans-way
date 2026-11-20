@@ -34,6 +34,16 @@ enum TelegramKeychain {
         }
     }
 
+    static func remove(account: String, service: String) throws {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account
+        ]
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else { throw TelegramKeychainError(status) }
+    }
+
     static func databaseEncryptionKey() throws -> Data {
         if let key = try get(account: databaseKeyAccount) { return key }
         var key = Data(count: 32)
@@ -43,7 +53,11 @@ enum TelegramKeychain {
         return key
     }
 
-    private static func get(account: String) throws -> Data? {
+    private static func get(account: String) throws -> Data? { try get(account: account, service: service) }
+    private static func set(_ data: Data, account: String) throws { try set(data, account: account, service: service) }
+
+    /// The generic-password helpers, shared with the gateway Keychain store under its own service name.
+    static func get(account: String, service: String) throws -> Data? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -58,7 +72,7 @@ enum TelegramKeychain {
         return data
     }
 
-    private static func set(_ data: Data, account: String) throws {
+    static func set(_ data: Data, account: String, service: String) throws {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -75,8 +89,8 @@ enum TelegramKeychain {
     }
 }
 
-private struct TelegramKeychainError: LocalizedError {
+struct TelegramKeychainError: LocalizedError {
     let status: OSStatus
     init(_ status: OSStatus) { self.status = status }
-    var errorDescription: String? { "Could not securely store Telegram credentials (Keychain status \(status))." }
+    var errorDescription: String? { "Could not securely store credentials (Keychain status \(status))." }
 }
