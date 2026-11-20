@@ -37,7 +37,7 @@ struct GatewayChatView: View {
         .toolbar {
             ToolbarItem(placement: .principal) {
                 HStack(spacing: 10) {
-                    AgentPortrait(name: "hermes", size: 34)
+                    AgentPortrait(name: "hermes", size: 34, live: true)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(.white).lineLimit(1)
                         Text("Alan’s Way").font(.caption2).foregroundStyle(WorkspaceTheme.secondary)
@@ -68,7 +68,7 @@ struct GatewayChatView: View {
                             }.frame(maxWidth: .infinity).padding(.top, 70)
                         } else {
                             VStack(spacing: 18) {
-                                AgentPortrait(name: "hermes", size: 100)
+                                AgentPortrait(name: "hermes", size: 100, live: true)
                                 Text("Say something to Alan.").font(.system(.title2, design: .serif, weight: .medium))
                                 Text("Your message and Alan’s reply stay on your Hermes machine.")
                                     .font(.footnote).foregroundStyle(WorkspaceTheme.secondary).multilineTextAlignment(.center).lineSpacing(4)

@@ -215,7 +215,7 @@ struct OnboardingBotSetupView: View {
 
     private func botRow(_ bot: TelegramChat) -> some View {
         HStack(spacing: 14) {
-            AgentPortrait(name: settings.avatar(for: bot.id), size: 48)
+            AgentPortrait(name: settings.avatar(for: bot.id), size: 48, tint: settings.tint(for: bot.id).rawValue, title: bot.title)
             VStack(alignment: .leading, spacing: 4) {
                 Text(bot.title).scaledFont(16, weight: .semibold).lineLimit(1)
                 if let username = bot.username {

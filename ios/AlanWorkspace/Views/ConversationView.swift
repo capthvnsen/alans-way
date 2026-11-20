@@ -40,7 +40,7 @@ struct ConversationView: View {
             ToolbarItem(placement: .principal) {
                 Button { showAgentSettings = true } label: {
                     HStack(spacing: 10) {
-                        AgentPortrait(name: settings.avatar(for: chat.id), size: 34)
+                        AgentPortrait(name: settings.avatar(for: chat.id), size: 34, tint: settings.tint(for: chat.id).rawValue, title: chat.title, live: true)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(chat.title).scaledFont(15, weight: .semibold).foregroundStyle(.white).lineLimit(1)
                             Text("Telegram bot").scaledFont(10).foregroundStyle(WorkspaceTheme.secondary)
@@ -133,7 +133,7 @@ struct ConversationView: View {
                             ProgressView("Loading conversation…").frame(maxWidth: .infinity).padding(.top, 70)
                         } else {
                             VStack(spacing: 18) {
-                                AgentPortrait(name: settings.avatar(for: chat.id), size: 100)
+                                AgentPortrait(name: settings.avatar(for: chat.id), size: 100, tint: settings.tint(for: chat.id).rawValue, title: chat.title, live: true)
                                 Text("A familiar conversation.").scaledFont(24, weight: .medium, design: .serif)
                                 Text("Send a message to \(chat.title).\nIt appears in your Telegram chat everywhere.")
                                     .scaledFont(13).foregroundStyle(WorkspaceTheme.secondary).multilineTextAlignment(.center).lineSpacing(4)
@@ -141,7 +141,7 @@ struct ConversationView: View {
                         }
                     }
                     ForEach(messages) { message in
-                        MessageBubble(message: message, avatar: settings.avatar(for: chat.id), onAttachment: {
+                        MessageBubble(message: message, avatar: settings.avatar(for: chat.id), tint: settings.tint(for: chat.id).rawValue, onAttachment: {
                             Task {
                                 do { attachmentURL = try await telegram.downloadAttachment(for: message, chatID: chat.id) }
                                 catch { errorText = error.localizedDescription }
@@ -237,6 +237,7 @@ struct ConversationView: View {
 private struct MessageBubble: View {
     let message: TelegramMessage
     let avatar: String
+    let tint: String
     let onAttachment: () -> Void
     let onButton: (TelegramButton) -> Void
     @ScaledMetric(relativeTo: .body) private var textSize: CGFloat = 15
@@ -246,7 +247,7 @@ private struct MessageBubble: View {
         VStack(alignment: message.isOutgoing ? .trailing : .leading, spacing: 9) {
             if !message.isOutgoing {
                 HStack(spacing: 7) {
-                    AgentPortrait(name: avatar, size: 23)
+                    AgentPortrait(name: avatar, size: 23, tint: tint)
                     Text(message.senderName).font(.system(size: metaSize, weight: .semibold)).foregroundStyle(WorkspaceTheme.secondary)
                 }
             }
