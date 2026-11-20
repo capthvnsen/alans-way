@@ -24,10 +24,10 @@
         "rotate": 2.6
       },
       "travel": {
-        "left": 0.02,
-        "right": 0.012,
-        "up": 0.012,
-        "down": 0.016
+        "left": 0.04,
+        "right": 0.018,
+        "up": 0.024,
+        "down": 0.032
       }
     },
     "cutout": true
@@ -57,10 +57,10 @@
         "rotate": 2.5
       },
       "travel": {
-        "left": 0.02,
-        "right": 0.012,
-        "up": 0.012,
-        "down": 0.016
+        "left": 0.04,
+        "right": 0.018,
+        "up": 0.024,
+        "down": 0.032
       }
     },
     "cutout": true
@@ -90,10 +90,10 @@
         "rotate": 3.3
       },
       "travel": {
-        "left": 0.02,
-        "right": 0.01,
-        "up": 0.008,
-        "down": 0.016
+        "left": 0.04,
+        "right": 0.015,
+        "up": 0.016,
+        "down": 0.032
       }
     },
     "cutout": true
@@ -123,10 +123,10 @@
         "rotate": 2.4
       },
       "travel": {
-        "left": 0.02,
-        "right": 0.016,
-        "up": 0.012,
-        "down": 0.016
+        "left": 0.04,
+        "right": 0.024,
+        "up": 0.024,
+        "down": 0.032
       }
     },
     "cutout": true
@@ -156,10 +156,10 @@
         "rotate": 4.1
       },
       "travel": {
-        "left": 0.016,
-        "right": 0.006,
-        "up": 0.012,
-        "down": 0.016
+        "left": 0.032,
+        "right": 0.009,
+        "up": 0.024,
+        "down": 0.032
       }
     },
     "cutout": true
@@ -189,10 +189,10 @@
         "rotate": 4.6
       },
       "travel": {
-        "left": 0.02,
-        "right": 0.012,
-        "up": 0.012,
-        "down": 0.016
+        "left": 0.04,
+        "right": 0.018,
+        "up": 0.024,
+        "down": 0.032
       }
     },
     "cutout": true
@@ -222,10 +222,10 @@
         "rotate": 1.4
       },
       "travel": {
-        "left": 0.02,
-        "right": 0.016,
-        "up": 0.012,
-        "down": 0.016
+        "left": 0.04,
+        "right": 0.024,
+        "up": 0.024,
+        "down": 0.032
       }
     },
     "cutout": true
@@ -255,10 +255,10 @@
         "rotate": 2.5
       },
       "travel": {
-        "left": 0.02,
-        "right": 0.014,
-        "up": 0.012,
-        "down": 0.016
+        "left": 0.04,
+        "right": 0.021,
+        "up": 0.024,
+        "down": 0.032
       }
     },
     "cutout": true
@@ -288,10 +288,10 @@
         "rotate": 3.5
       },
       "travel": {
-        "left": 0.02,
-        "right": 0.012,
-        "up": 0.012,
-        "down": 0.016
+        "left": 0.04,
+        "right": 0.018,
+        "up": 0.024,
+        "down": 0.032
       }
     },
     "cutout": true
@@ -321,10 +321,10 @@
         "rotate": 1.7
       },
       "travel": {
-        "left": 0.02,
-        "right": 0.016,
-        "up": 0.012,
-        "down": 0.016
+        "left": 0.04,
+        "right": 0.024,
+        "up": 0.024,
+        "down": 0.032
       }
     },
     "cutout": true
