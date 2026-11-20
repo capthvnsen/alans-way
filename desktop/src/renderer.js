@@ -2525,4 +2525,4 @@ function showSelectedCanvasTab() { $('canvas-tabs').querySelector('[aria-selecte
 new ResizeObserver(showSelectedCanvasTab).observe($('canvas-tabs'));
 new ResizeObserver(() => { if (state) fitTabs(); }).observe(document.querySelector('.tab-bar'));
 window.addEventListener('resize', scheduleLayout);
-api.getState().then(render).catch((error) => toast(error.message));
+api.getState().then((next) => { render(next); api.bootMark?.('ui-interactive'); }).catch((error) => toast(error.message));

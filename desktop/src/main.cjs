@@ -1,3 +1,6 @@
+try { require('node:module').enableCompileCache?.(); } catch {}
+const bootTimer = require('./boot-timing.cjs').createBootTimer();
+bootTimer.mark('process-start');
 const { SSH_OPTIONS: TAILNET_SSH_OPTIONS, hermesWebappUrl } = require('./tailnet.cjs');
 const { createWebappSignIn, signInToWebapp, SIGN_IN_ERRORS } = require('./webapp-signin.cjs');
 const { authorizeBot, approvalIdentity, registryFile } = require('./bot-auth.cjs');
@@ -2121,6 +2124,9 @@ function registerIpc() {
     try { return await nativeChat.command(name, value); }
     catch (error) { logError(`native ${String(name).slice(0, 40)}`, error); throw error; }
   });
+  ipcMain.on('workspace:boot-mark', (event, name) => {
+    try { trustSender(event); if (typeof name === 'string' && /^[\w-]{1,40}$/.test(name)) bootTimer.mark(name); } catch {}
+  });
   ipcMain.on('workspace:layout', (event, value) => {
     try {
       trustSender(event);
@@ -3814,6 +3820,8 @@ function createWindow() {
   registerIpc();
   claimTokens.setReady(claimWithToken);
   win.loadFile(path.join(ROOT, 'index.html'));
+  bootTimer.mark('window-created');
+  win.webContents.once('did-finish-load', () => bootTimer.mark('first-paint'));
   remoteView.webContents.loadFile(path.join(ROOT, 'remote.html'));
   telegramView.webContents.loadURL(prefs.selectedBotId ? `${TELEGRAM}#${prefs.selectedBotId}` : TELEGRAM).catch(() => {});
   restoreBrowserTabs();
@@ -3933,7 +3941,9 @@ let nativeSummary = '';
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.whenReady().then(async () => {
+    bootTimer.mark('app-ready');
     prefs = readPreferences(); prefs.remoteControl = false;
+    bootTimer.mark('prefs-loaded');
     if (pinOnboarding(prefs)) savePreferences();
     seedMacSshHost();
     hermesHub = createHermesHub({
