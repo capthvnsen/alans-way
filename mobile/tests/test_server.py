@@ -550,6 +550,57 @@ class PluginRuntimeTests(unittest.TestCase):
             self.assertFalse(replacement._thread.is_alive())
 
 
+class ListenerLifecycleTests(unittest.TestCase):
+    def broker(self, temp):
+        return VoiceBroker(bot_token="test", db_path=Path(temp) / "voice.db", audio=FakeAudio(),
+                           inject=lambda *_: True, app_url="https://voice.example.test/call")
+
+    @staticmethod
+    def free_port():
+        import socket
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            return probe.getsockname()[1]
+
+    def test_a_client_stalled_mid_request_cannot_keep_the_port_after_unload(self):
+        import socket
+        with tempfile.TemporaryDirectory() as temp:
+            port = self.free_port()
+            listener = BrokerListener(self.broker(temp), port=port)
+            listener.start()
+            stalled = socket.create_connection(("127.0.0.1", port))
+            try:
+                stalled.sendall(b"POST /v1/calls HTTP/1.1\r\nHost: x\r\nContent-Length: 500\r\n\r\n{")
+                time.sleep(0.3)
+                began = time.monotonic()
+                listener.stop()
+                self.assertLess(time.monotonic() - began, 6)
+                self.assertFalse(listener._thread.is_alive())
+                replacement = BrokerListener(self.broker(temp), port=port)
+                replacement.start()
+                replacement.stop()
+            finally:
+                stalled.close()
+
+    def test_a_port_already_in_use_says_so(self):
+        import socket
+        with tempfile.TemporaryDirectory() as temp, socket.socket() as taken:
+            taken.bind(("127.0.0.1", 0))
+            taken.listen()
+            port = taken.getsockname()[1]
+            listener = BrokerListener(self.broker(temp), port=port)
+            with self.assertRaises(RuntimeError) as caught:
+                listener.start()
+            self.assertIn(str(port), str(caught.exception))
+            self.assertFalse(listener._thread.is_alive())
+
+    def test_only_loopback_is_bound(self):
+        with tempfile.TemporaryDirectory() as temp:
+            for host in ("0.0.0.0", "::", "192.0.2.1", ""):
+                with self.subTest(host=host), self.assertRaises(ValueError):
+                    BrokerListener(self.broker(temp), host=host, port=self.free_port())
+
+
 class HermesAudioAdapterTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.requests = []

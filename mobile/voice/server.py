@@ -30,6 +30,9 @@ LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 MAX_TEXT_FIELD_BYTES = 256
 MAX_MULTIPART_PARTS = 8
 CAPABILITIES_CACHE_SECONDS = 45
+LISTENER_START_SECONDS = 10
+# A client stalled mid-request must not keep the port past plugin unload.
+LISTENER_STOP_GRACE_SECONDS = 2
 AUDIO_MIME_TYPES = {"audio/webm", "audio/mp4", "audio/ogg", "audio/wav"}
 SILENCE_TRANSCRIPTS = {"you", "you.", "thank you", "thank you.", "thanks for watching",
                        "thanks for watching.", "[blank_audio]", "(silence)"}
@@ -464,6 +467,8 @@ class BrokerListener:
     """Run aiohttp on loopback in a daemon thread owned by the gateway plugin."""
 
     def __init__(self, broker: VoiceBroker, host: str = "127.0.0.1", port: int = 8765, *, miniapp_dir: Path | None = None):
+        if host not in LOOPBACK_HOSTS:
+            raise ValueError("the voice broker only listens on loopback; put an HTTPS proxy in front of it")
         self.broker, self.host, self.port = broker, host, int(port)
         self.miniapp_dir = miniapp_dir
         self._ready = threading.Event()
@@ -475,10 +480,12 @@ class BrokerListener:
 
     def start(self) -> None:
         self._thread.start()
-        if not self._ready.wait(10):
-            raise RuntimeError("Voice broker listener did not start")
+        if not self._ready.wait(LISTENER_START_SECONDS):
+            self.stop()
+            raise RuntimeError(f"Voice broker did not start listening on {self.host}:{self.port} in time")
         if self._error:
-            raise RuntimeError("Voice broker listener failed") from self._error
+            self._thread.join(timeout=LISTENER_STOP_GRACE_SECONDS)
+            raise RuntimeError(f"Voice broker could not listen on {self.host}:{self.port}: {self._error}") from self._error
 
     def _run(self) -> None:
         async def serve():
@@ -492,7 +499,10 @@ class BrokerListener:
                 self._ready.set()
                 await self._shutdown.wait()
             finally:
-                await self._runner.cleanup()
+                try:
+                    await asyncio.wait_for(self._runner.cleanup(), LISTENER_STOP_GRACE_SECONDS)
+                except asyncio.TimeoutError:
+                    log.warning("Voice broker dropped connections still open after %ss", LISTENER_STOP_GRACE_SECONDS)
 
         try:
             asyncio.run(serve())
@@ -503,4 +513,4 @@ class BrokerListener:
     def stop(self):
         if self._loop and self._shutdown and self._loop.is_running():
             self._loop.call_soon_threadsafe(self._shutdown.set)
-            self._thread.join(timeout=10)
+            self._thread.join(timeout=LISTENER_STOP_GRACE_SECONDS + 5)
