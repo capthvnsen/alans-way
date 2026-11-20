@@ -18,6 +18,9 @@ const GAP_NOTE = 'Part of this reply was missed and was reloaded from history.';
 const DELIVERED_NOTE = 'That message had already reached Hermes. Its reply shows after a refresh.';
 // A message typed while Hermes cannot be reached waits in a per-conversation queue on disk and goes in order.
 const QUEUE_MAX_MS = 30 * 60 * 1000, QUEUE_MAX = 200, QUEUE_BYTES = 1048576, QUEUE_SAVE_MS = 250;
+// After an attempt that may have reached Hermes without an answer, the history is not read for this long: a request that
+// was still on its way when we gave up has its row in the history by then.
+const QUEUE_SETTLE_MS = 15000;
 const QUEUE_STATES = new Set(['queued', 'sending', 'failed']);
 // A compaction that has not answered by then is given up on and the message goes as it is.
 const COMPACT_DEADLINE_MS = 120000;
@@ -50,7 +53,7 @@ function mergeMessages(current, incoming, keepLocal = () => true) {
 const sameMessages = (a, b) => a.length === b.length && a.every((m, i) => m.id === b[i].id && m.text === b[i].text && m.state === b[i].state);
 
 function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {}, notify = () => {}, openLink = () => {}, copyText = () => {},
-  apiFactory = createHermesApi, now = Date.now, pollMs = 1000, retryMs = 5000, visible = () => true, compactEnabled = () => true, compactDeadlineMs = COMPACT_DEADLINE_MS }) {
+  apiFactory = createHermesApi, now = Date.now, pollMs = 1000, retryMs = 5000, visible = () => true, compactEnabled = () => true, compactDeadlineMs = COMPACT_DEADLINE_MS, settleMs = QUEUE_SETTLE_MS }) {
   const cacheDir = path.join(dir, 'native-chat-cache'), queueDir = path.join(dir, 'native-chat-queue');
   const loaded = loadConfig() || {};
   const config = { baseUrl: str(loaded.baseUrl, 500), profile: str(loaded.profile, 64), key: str(loaded.key, 500) };
@@ -58,7 +61,7 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
   let activeId = SESSION_ID.test(loaded.lastSessionId || '') ? loaded.lastSessionId : '';
   let api = null, status = 'idle', error = '', revSeq = 0, localSeq = 0, cardSeq = 0, configTimer, autoPick = !activeId, wanted = {};
   const threads = new Map(), runs = new Map(), cards = new Map(), unread = new Set(), inflight = new Map();
-  // Unsent messages per conversation, oldest first: { cmid, text, createdAt (ms), state, attempts, attemptedAt, afterId, localId }.
+  // Unsent messages per conversation, oldest first: { cmid, text, createdAt (ms), state, attempts, attemptedAt, afterId, localId, settleAt }.
   const queues = new Map(), queueTimers = new Map(), checking = new Set(), claimed = new Set();
   let drainTimer;
   const configured = () => !!(config.baseUrl && config.key);
@@ -162,7 +165,8 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
           .slice(0, QUEUE_MAX)
           // An attempt that was in flight when the app quit is in doubt: it goes through the history check, never straight out.
           .map((i) => ({ cmid: i.cmid, text: i.text, createdAt: i.createdAt, state: i.state === 'sending' ? 'queued' : i.state,
-            attempts: Math.max(Number.isSafeInteger(i.attempts) ? i.attempts : 0, i.state === 'sending' ? 1 : 0), attemptedAt: Number(i.attemptedAt) || 0, afterId: Number(i.afterId) || 0, ...(i.noCompact === true ? { noCompact: true } : {}) }));
+            attempts: Math.max(Number.isSafeInteger(i.attempts) ? i.attempts : 0, i.state === 'sending' ? 1 : 0), attemptedAt: Number(i.attemptedAt) || 0, afterId: Number(i.afterId) || 0,
+            ...(i.state === 'sending' ? { settleAt: now() + settleMs } : {}), ...(i.noCompact === true ? { noCompact: true } : {}) }));
         if (items.length) queues.set(id, items);
       } catch {}
     }
@@ -194,7 +198,7 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
   function drain(id) {
     sweep();
     const item = queues.get(id)?.[0];
-    if (api && item?.state === 'queued' && !runs.has(id) && !checking.has(id) && ready()) attempt(id, item);
+    if (api && item?.state === 'queued' && !runs.has(id) && !checking.has(id) && !(item.settleAt > now()) && ready()) attempt(id, item);
     scheduleDrain();
   }
 
@@ -202,9 +206,9 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
     if (item.attempts > 0) {
       // An earlier try may have reached Hermes. Hermes takes no client id on a prompt yet, so history is the only
       // evidence: a user row with this text, newer than what we had when the first try began, not yet claimed.
-      // shortcut: if that first request is still on its way to Hermes when this read happens, the row is not there
-      // yet and the message goes twice; this closes only when Hermes returns the client id (NousResearch/hermes-agent#157880).
-      // Two identical messages typed within the 60 s window can also be mistaken for one another.
+      // drain() holds this read back for settleMs after the first try ended in doubt, so a request still on its way has landed.
+      // shortcut: that is a delay, not proof (a request slower than settleMs still goes twice); it closes only when Hermes
+      // returns the client id (NousResearch/hermes-agent#157880). Two identical messages typed within the 60 s window can also be mistaken for one another.
       checking.add(id);
       let body;
       try { body = await api.getMessages(id, { limit: 50, order: 'latest' }); } catch { checking.delete(id); scheduleDrain(); return; }
@@ -376,6 +380,7 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
     for (const card of openCards(run)) card.state = 'expired';
     if (err && !run.runId) {
       runs.delete(id);
+      if (run.sent && !/^http_/.test(err.code)) run.item.settleAt = now() + settleMs;
       // Not admitted and not stopped by the user: Hermes was unreachable or busy. The message waits and goes again.
       if (WAIT_CODES.has(err.code) && queues.get(id)?.includes(run.item)) {
         if (err.code !== 'http_409') fail(err);
@@ -412,7 +417,7 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
     const run = { id, runId: '', messageId: '', text: '', final: '', tool: '', status: 'sending', outcome: '', error: '', localIds: [item.localId], item, abort: new AbortController(), startedAt: now() / 1000 };
     runs.set(id, run);
     notify();
-    compactFirst(run).then(() => api.streamChat(id, item.text, { signal: run.abort.signal, clientMessageId: item.cmid, onEvent: (name, data) => onEvent(run, name, data) }))
+    compactFirst(run).then(() => { run.sent = true; return api.streamChat(id, item.text, { signal: run.abort.signal, clientMessageId: item.cmid, onEvent: (name, data) => onEvent(run, name, data) }); })
       .then(() => finish(run, null), (e) => finish(run, e));
   }
 

@@ -17,7 +17,7 @@ async function until(pred, what, ms = 3000) {
 const unreachable = () => Object.assign(new Error('x'), { code: 'unreachable' });
 
 // `server` is Hermes's history. By default a stream stores the user row, starts and completes a run like Hermes does.
-function rig({ dir = fs.mkdtempSync(path.join(os.tmpdir(), 'native-chat-queue-')), ready = true, server = [], stream, clock = { ms: 1.7e12 } } = {}) {
+function rig({ dir = fs.mkdtempSync(path.join(os.tmpdir(), 'native-chat-queue-')), ready = true, server = [], stream, clock = { ms: 1.7e12 }, settleMs = 0 } = {}) {
   const calls = [], links = [];
   const state = { ready, server, rowId: server.reduce((n, r) => Math.max(n, r.id), 0) };
   const store = (text) => { state.server.push({ id: ++state.rowId, role: 'user', content: text, timestamp: clock.ms / 1000 }); };
@@ -34,7 +34,7 @@ function rig({ dir = fs.mkdtempSync(path.join(os.tmpdir(), 'native-chat-queue-')
       opts.onEvent('run.completed', {});
     },
   };
-  const chat = createNativeChat({ dir, retryMs: 10, now: () => clock.ms, apiFactory: () => api,
+  const chat = createNativeChat({ dir, retryMs: 10, settleMs, now: () => clock.ms, apiFactory: () => api,
     loadConfig: () => ({ baseUrl: 'http://127.0.0.1:8642', key: 'k'.repeat(20), lastSessionId: SID, sessions: [{ id: SID, source: 'api_server', title: 'One' }] }) });
   return { chat, api, calls, state, dir, clock, linkLive: () => links.forEach((cb) => cb({ state: 'live' })),
     rows: () => chat.getState().thread.messages, states: () => chat.getState().thread.messages.map((m) => `${m.text}:${m.state || 'server'}`) };
@@ -103,6 +103,26 @@ test('after a drop the history is read first: a message Hermes already has is no
   await tick(60);
   assert.equal(r.calls.length, 1, 'no second submit');
   assert.deepEqual(r.states(), ['maybe:server']);
+});
+
+// The first request is still on its way to Hermes when the app gives up on it: its row lands in the history later.
+async function slowFirstRequest(settleMs) {
+  const t0 = Date.now(), clock = { get ms() { return 1.7e12 + Date.now() - t0; } };
+  const r = rig({ settleMs, clock, stream: async ({ text, store, calls, opts }) => {
+    if (calls.length === 1) { setTimeout(() => store(text), 80); throw unreachable(); }
+    store(text); opts.onEvent('run.started', { run_id: 'r' }); opts.onEvent('run.completed', {});
+  } });
+  await r.chat.command('send', { sessionId: SID, text: 'slow' });
+  await tick(300);
+  return r;
+}
+test('a request still on its way when the app gave up is found in the history, not sent twice', async () => {
+  const old = await slowFirstRequest(0);
+  assert.equal(old.state.server.filter((m) => m.content === 'slow').length, 2, 'without the settle window the history read misses the row and the message goes twice');
+  const r = await slowFirstRequest(120);
+  assert.equal(r.calls.length, 1);
+  assert.equal(r.state.server.filter((m) => m.content === 'slow').length, 1);
+  assert.deepEqual(r.states(), ['slow:server']);
 });
 
 test('after a drop that lost the message, it is sent again with the same client id', async () => {
