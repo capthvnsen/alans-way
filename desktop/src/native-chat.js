@@ -158,7 +158,7 @@
     const days = (today - date) / 86400000;
     return `${date.toLocaleDateString([], days < 6 ? { weekday: 'long' } : { month: 'short', day: 'numeric', year: date.getFullYear() === today.getFullYear() ? undefined : 'numeric' })} ${fmtTime(ts)}`;
   }
-  const SOURCE_LABEL = { api_server: 'Here', telegram: 'Telegram', discord: 'Discord', slack: 'Slack', whatsapp: 'WhatsApp', signal: 'Signal', email: 'Email', cli: 'Terminal', tui: 'Terminal', desktop: 'Hermes Desktop', gui: 'Hermes Desktop', local: 'Hermes Desktop' };
+  const SOURCE_LABEL = { api_server: 'Alan\'s Way', telegram: 'Telegram', discord: 'Discord', slack: 'Slack', whatsapp: 'WhatsApp', signal: 'Signal', email: 'Email', cli: 'Terminal', tui: 'Terminal', desktop: 'Hermes Desktop', gui: 'Hermes Desktop', local: 'Hermes Desktop' };
   const sourceLabel = (source) => SOURCE_LABEL[source] || String(source || 'Hermes').replace(/_/g, ' ');
   const GAP = 15 * 60, CHUNK = 60;
 

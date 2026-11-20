@@ -254,6 +254,10 @@ if (!process.versions.electron) {
       assert.ok(bot && bot.shared && !bot.readOnly, 'the Bot Chat is listed as shared');
       await click('#native-pane .nc-switch');
       assert.equal(await run(`document.querySelector('#native-pane .nc-menu-item[data-id="${bot.id}"] .nc-menu-meta').textContent`), 'Shared with Hermes Desktop');
+      // Chats made in this app are named for the app, not "Here".
+      const made = (await native()).sessions.find((s) => s.source === 'api_server' && !s.shared);
+      assert.ok(made, 'a chat made in this app is listed');
+      assert.equal(await run(`document.querySelector('#native-pane .nc-menu-item[data-id="${made.id}"] .nc-menu-meta').textContent.split(' · ')[0]`), 'Alan\'s Way');
       await click('#native-pane .nc-switch');
       await openSession(bot.id);
       await until(async () => (await run(`document.querySelector('#native-pane .nc-switch-title').textContent`)) === 'Bot Chat' && visible('#native-pane .nc-composer'), 'composer in the Bot Chat');
