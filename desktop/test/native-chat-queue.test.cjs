@@ -18,12 +18,14 @@ const unreachable = () => Object.assign(new Error('x'), { code: 'unreachable' })
 
 // `server` is Hermes's history. By default a stream stores the user row, starts and completes a run like Hermes does.
 function rig({ dir = fs.mkdtempSync(path.join(os.tmpdir(), 'native-chat-queue-')), ready = true, server = [], stream, clock = { ms: 1.7e12 }, settleMs = 0 } = {}) {
-  const calls = [], links = [];
-  const state = { ready, server, rowId: server.reduce((n, r) => Math.max(n, r.id), 0) };
+  const calls = [], links = [], creates = [];
+  const state = { ready, server, created: new Set(), rowId: server.reduce((n, r) => Math.max(n, r.id), 0) };
   const store = (text) => { state.server.push({ id: ++state.rowId, role: 'user', content: text, timestamp: clock.ms / 1000 }); };
   const api = {
     listSessions: async () => ({ data: [{ id: SID, source: 'api_server', title: 'One' }] }),
     getMessages: async () => { if (state.history) throw unreachable(); return { data: [...state.server].reverse() }; },
+    // Hermes takes the id it is given and refuses a second create of it (gateway/platforms/api_server.py:2586, :2624).
+    createSession: async ({ id }) => { creates.push(id); if (state.noCreate) throw unreachable(); if (state.created.has(id)) throw Object.assign(new Error('exists'), { code: 'http_409' }); state.created.add(id); return { session: { id, source: 'api_server' } }; },
     sendReady: () => state.ready,
     onLinkState: (cb) => { links.push(cb); return () => {}; },
     streamChat: async (id, text, opts) => {
@@ -36,7 +38,7 @@ function rig({ dir = fs.mkdtempSync(path.join(os.tmpdir(), 'native-chat-queue-')
   };
   const chat = createNativeChat({ dir, retryMs: 10, settleMs, now: () => clock.ms, apiFactory: () => api,
     loadConfig: () => ({ baseUrl: 'http://127.0.0.1:8642', key: 'k'.repeat(20), lastSessionId: SID, sessions: [{ id: SID, source: 'api_server', title: 'One' }] }) });
-  return { chat, api, calls, state, dir, clock, linkLive: () => links.forEach((cb) => cb({ state: 'live' })),
+  return { chat, api, calls, creates, state, dir, clock, linkLive: () => links.forEach((cb) => cb({ state: 'live' })),
     rows: () => chat.getState().thread.messages, states: () => chat.getState().thread.messages.map((m) => `${m.text}:${m.state || 'server'}`) };
 }
 
@@ -93,7 +95,7 @@ test('the queue survives a restart and is delivered once', async () => {
   assert.equal(second.calls.length, 1);
 });
 
-const onDisk = (dir) => { try { return JSON.parse(fs.readFileSync(path.join(dir, 'native-chat-queue', `${SID}.json`), 'utf8')).items; } catch { return []; } };
+const onDisk = (dir, id = SID) => { try { return JSON.parse(fs.readFileSync(path.join(dir, 'native-chat-queue', `${id}.json`), 'utf8')).items; } catch { return []; } };
 test('a message is on disk before send is acknowledged and before its request leaves, so a crash right after loses nothing', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'native-chat-queue-'));
   const offline = rig({ dir, ready: false });
@@ -264,4 +266,73 @@ test('queue limits and the queue file never leak into the projected state', asyn
   for (let i = 0; i < 10; i++) await r.chat.command('send', { sessionId: SID, text: 'y'.repeat(100000) });
   await assert.rejects(r.chat.command('send', { sessionId: SID, text: 'z'.repeat(100000) }), /Too many messages/);
   assert.equal(JSON.stringify(r.chat.getState()).includes('cmid'), false);
+});
+
+const newConversation = async (r, text = 'hello') => (await r.chat.command('send', { sessionId: '', text })).sessionId;
+
+test('the first message of a new conversation started offline waits, then the conversation is created once and the message goes', async () => {
+  const r = rig({ ready: false });
+  const id = await newConversation(r);
+  assert.match(id, /^api_\d+_[0-9a-f]{8}$/);
+  assert.equal(r.chat.getState().activeId, id);
+  assert.deepEqual(r.states(), ['hello:queued']);
+  assert.deepEqual(onDisk(r.dir, id).map((i) => [i.text, i.create]), [['hello', true]], 'on disk before send returned');
+  await tick(30);
+  assert.deepEqual([r.creates, r.calls], [[], []], 'nothing reaches Hermes while it is unreachable');
+  r.state.ready = true; r.linkLive();
+  await until(() => r.calls.length === 1, 'the message to go');
+  assert.deepEqual(r.creates, [id]);
+  assert.equal(r.calls[0].id, id);
+  await until(() => !fs.existsSync(path.join(r.dir, 'native-chat-queue', `${id}.json`)), 'delivery');
+  assert.equal(r.creates.length, 1);
+});
+
+test('a new offline conversation survives a restart, and is created exactly once even when the create had already gone through', async () => {
+  const first = rig({ ready: false });
+  const id = await newConversation(first);
+  const second = rig({ dir: first.dir, ready: false });
+  assert.ok(second.chat.getState().sessions.some((s) => s.id === id), 'the conversation is listed again');
+  await second.chat.command('open', { sessionId: id });
+  assert.deepEqual(second.states(), ['hello:queued']);
+  second.state.created.add(id); // the app died after Hermes made it, before the app noted it
+  second.state.ready = true;
+  await until(() => second.calls.length === 1, 'the restored message to go');
+  assert.deepEqual([second.creates, second.calls[0].id], [[id], id]);
+  await tick(60);
+  assert.equal(second.calls.length, 1);
+});
+
+test('while Hermes cannot make the conversation the message stays queued and is retried; a second message follows the first', async () => {
+  const r = rig({});
+  r.state.noCreate = true;
+  const id = await newConversation(r, 'one');
+  await until(() => r.creates.length >= 2, 'a retry of the create');
+  assert.equal(r.calls.length, 0);
+  assert.deepEqual(r.states(), ['one:queued']);
+  await r.chat.command('send', { sessionId: id, text: 'two' });
+  r.state.noCreate = false;
+  await until(() => r.calls.length === 2, 'both to go');
+  assert.deepEqual(r.calls.map((c) => c.text), ['one', 'two']);
+  assert.equal(new Set(r.creates).size, 1);
+  assert.ok(r.creates.every((c) => c === id));
+});
+
+test('cancelling the only message of a conversation that was never made removes the conversation', async () => {
+  const r = rig({ ready: false });
+  const id = await newConversation(r);
+  await r.chat.command('cancel', { sessionId: id, localId: r.rows()[0].id });
+  const state = r.chat.getState();
+  assert.equal(state.sessions.some((s) => s.id === id), false);
+  assert.equal(state.activeId, '');
+  assert.equal(r.creates.length, 0);
+});
+
+test('cancelling the first message of a never-made conversation passes the create to the next one', async () => {
+  const r = rig({ ready: false });
+  const id = await newConversation(r, 'one');
+  await r.chat.command('send', { sessionId: id, text: 'two' });
+  await r.chat.command('cancel', { sessionId: id, localId: r.rows()[0].id });
+  r.state.ready = true; r.linkLive();
+  await until(() => r.calls.length === 1, 'the second message to go');
+  assert.deepEqual([r.creates, r.calls[0].text], [[id], 'two']);
 });

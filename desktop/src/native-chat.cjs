@@ -61,7 +61,8 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
   let activeId = SESSION_ID.test(loaded.lastSessionId || '') ? loaded.lastSessionId : '';
   let api = null, status = 'idle', error = '', revSeq = 0, localSeq = 0, cardSeq = 0, configTimer, autoPick = !activeId, wanted = {};
   const threads = new Map(), runs = new Map(), cards = new Map(), unread = new Set(), inflight = new Map();
-  // Unsent messages per conversation, oldest first: { cmid, text, createdAt (ms), state, attempts, attemptedAt, afterId, localId, settleAt }.
+  // Unsent messages per conversation, oldest first: { cmid, text, createdAt (ms), state, attempts, attemptedAt, afterId, localId, settleAt, create }.
+  // `create` marks the first message of a conversation Hermes has not been asked to create yet: the app chose its id.
   const queues = new Map(), queueTimers = new Map(), checking = new Set(), claimed = new Set();
   let drainTimer;
   const configured = () => !!(config.baseUrl && config.key);
@@ -77,7 +78,8 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
     }
   };
   // Attach the open conversation and learn its context size once; later numbers arrive on the reply events.
-  const warm = (id) => { api?.warm?.(id); Promise.resolve(api?.usage?.(id)).then((u) => noteUsage(id, u), () => {}); };
+  const warm = (id) => { if (unborn(id)) return; api?.warm?.(id); Promise.resolve(api?.usage?.(id)).then((u) => noteUsage(id, u), () => {}); };
+  const unborn = (id) => !!queues.get(id)?.[0]?.create;
   const address = () => config.baseUrl ? `${config.baseUrl}${config.profile ? `/p/${config.profile}` : ''}` : '';
   const cacheFile = (id) => path.join(cacheDir, `${id}.json`);
   const bump = (t) => { t.rev = ++revSeq; };
@@ -166,8 +168,10 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
           // An attempt that was in flight when the app quit is in doubt: it goes through the history check, never straight out.
           .map((i) => ({ cmid: i.cmid, text: i.text, createdAt: i.createdAt, state: i.state === 'sending' ? 'queued' : i.state,
             attempts: Math.max(Number.isSafeInteger(i.attempts) ? i.attempts : 0, i.state === 'sending' ? 1 : 0), attemptedAt: Number(i.attemptedAt) || 0, afterId: Number(i.afterId) || 0,
-            ...(i.state === 'sending' ? { settleAt: now() + settleMs } : {}), ...(i.noCompact === true ? { noCompact: true } : {}) }));
-        if (items.length) queues.set(id, items);
+            ...(i.state === 'sending' ? { settleAt: now() + settleMs } : {}), ...(i.noCompact === true ? { noCompact: true } : {}), ...(i.create === true ? { create: true } : {}) }));
+        if (!items.length) continue;
+        queues.set(id, items);
+        if (items[0].create && !sessions.some((s) => s.id === id)) sessions = [draftRow(id, items[0].createdAt), ...sessions].slice(0, MAX_SESSIONS);
       } catch {}
     }
   }
@@ -180,6 +184,10 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
   function dropItem(id, item, { row = false } = {}) {
     const rest = (queues.get(id) || []).filter((i) => i !== item);
     if (rest.length) queues.set(id, rest); else queues.delete(id);
+    if (item.create) {
+      if (rest.length) rest[0].create = true;
+      else { sessions = sessions.filter((s) => s.id !== id); if (activeId === id) activeId = ''; persistConfigSoon(); }
+    }
     if (row) { const t = thread(id); t.messages = t.messages.filter((m) => m.id !== item.localId); bump(t); }
     saveQueueSoon(id);
   }
@@ -203,6 +211,25 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
   }
 
   async function attempt(id, item) {
+    if (item.create) {
+      // Hermes takes the id the app chose and refuses a second create of it (409), so a repeat after a drop or a restart is harmless.
+      checking.add(id);
+      let failure;
+      try {
+        const made = await api.createSession({ id });
+        if (made?.session?.id && made.session.id !== id) failure = Object.assign(new Error('Hermes did not create the conversation.'), { code: 'bad_session' });
+      } catch (e) { if (e?.code !== 'http_409') failure = e; }
+      checking.delete(id);
+      if (item.state !== 'queued' || !queues.get(id)?.includes(item)) return;
+      if (failure) {
+        fail(failure);
+        if (failure.code === 'unreachable') scheduleDrain();
+        else { setItemState(id, item, 'failed'); thread(id).notice = 'That message was not sent.'; drain(id); }
+        notify();
+        return;
+      }
+      delete item.create; writeQueue(id); refreshSessions();
+    }
     if (item.attempts > 0) {
       // An earlier try may have reached Hermes. Hermes takes no client id on a prompt yet, so history is the only
       // evidence: a user row with this text, newer than what we had when the first try began, not yet claimed.
@@ -244,6 +271,7 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
     return inflight.get(key);
   }
 
+  const draftRow = (id, ms) => ({ id, title: '', source: 'api_server', preview: '', lastActive: ms / 1000 });
   const sessionRow = (s) => ({ id: str(s.id, 128), title: str(s.title, 200), source: str(s.source, 40) || 'api_server', preview: str(s.preview, 200),
     lastActive: Number(s.last_active ?? s.lastActive ?? s.started_at) || 0 });
   const sourceOf = (id) => sessions.find((s) => s.id === id)?.source || 'api_server';
@@ -265,7 +293,7 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
         const listed = (Array.isArray(body.data) ? body.data : []).filter((s) => s && !s.hidden);
         for (const s of Array.isArray(bot.data) ? bot.data : []) if (s && isShared(s) && !listed.some((r) => r.id === s.id)) listed.push(s);
         const rows = listed.filter((s) => SESSION_ID.test(s.id) && !s.archived && !s.is_internal_child).map(sessionRow).sort((a, b) => isShared(b) - isShared(a));
-        const local = sessions.filter((s) => s.id === activeId && !rows.some((r) => r.id === s.id));
+        const local = sessions.filter((s) => (s.id === activeId || unborn(s.id)) && !rows.some((r) => r.id === s.id));
         sessions = local.concat(rows).slice(0, MAX_SESSIONS);
         status = 'ready'; error = '';
         if (autoPick && !activeId) { activeId = pickSession(); if (activeId) revalidate(activeId); }
@@ -288,7 +316,7 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
   }
 
   function revalidate(id) {
-    if (!api || !id) return Promise.resolve();
+    if (!api || !id || unborn(id)) return Promise.resolve();
     return once(`messages:${id}`, async () => {
       const t = thread(id);
       t.loading = true; notify();
@@ -508,18 +536,14 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
       let id = SESSION_ID.test(String(sessionId || '')) ? sessionId : '';
       if (id && isReadOnly(id)) throw new Error('This conversation is read-only here. Use Continue here.');
       if (id && runs.has(id)) throw new Error('Wait for the reply, or stop it, before sending again.');
-      if (!id) {
-        const body = await api.createSession({});
-        if (!SESSION_ID.test(String(body?.session?.id || ''))) throw new Error('Hermes did not create a conversation.');
-        id = body.session.id;
-        sessions = [sessionRow(body.session), ...sessions].slice(0, MAX_SESSIONS);
-        setActive(id);
-      }
+      const create = !id;
+      if (create) id = `api_${Math.floor(now() / 1000)}_${crypto.randomBytes(4).toString('hex')}`;
       const t = thread(id), items = queues.get(id) || [];
       if (items.length >= QUEUE_MAX || items.reduce((n, i) => n + i.text.length, 0) + text.length > QUEUE_BYTES) throw new Error('Too many messages are waiting to send. Wait for them to go, or delete some.');
-      const item = { cmid: crypto.randomUUID(), text, createdAt: now(), state: 'queued', attempts: 0, attemptedAt: 0, afterId: 0, ...(compact === false ? { noCompact: true } : {}) };
+      const item = { cmid: crypto.randomUUID(), text, createdAt: now(), state: 'queued', attempts: 0, attemptedAt: 0, afterId: 0, ...(create ? { create: true } : {}), ...(compact === false ? { noCompact: true } : {}) };
       queues.set(id, [...items, item]);
       t.messages = [...t.messages, queuedRow(item)]; t.notice = ''; bump(t); writeQueue(id);
+      if (create) { sessions = [draftRow(id, item.createdAt), ...sessions].slice(0, MAX_SESSIONS); setActive(id); }
       const s = sessions.find((row) => row.id === id);
       if (s) { s.lastActive = now() / 1000; sessions = [s, ...sessions.filter((row) => row !== s)]; }
       drain(id);
