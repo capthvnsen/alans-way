@@ -30,7 +30,9 @@ const until = async (read, why, ms = 15000) => {
   await until(() => !shell.isLoading() && shell.getURL().endsWith('index.html'), 'workspace page');
   const run = (expression) => shell.executeJavaScript(expression).catch(error => { throw new Error(`${expression}: ${error.message}`); });
   const state = () => run('workspace.getState()');
-  const selected = () => run(`[...document.querySelectorAll('#canvas-tabs [role=tab]')].filter(b => b.getAttribute('aria-selected') === 'true').map(b => b.dataset.canvas).join()`);
+  // The browser is not a pinned tab: on it, an open page tab (or the New tab placeholder) is the selected one.
+  const selected = async () => (await run(`[...document.querySelectorAll('#canvas-tabs [role=tab]')].filter(b => b.getAttribute('aria-selected') === 'true').map(b => b.dataset.canvas).join()`))
+    || ((await state()).canvasTab === 'browser' ? 'browser' : '');
   const showing = (tab) => until(async () => (await selected()) === tab, `${tab} tab selected`);
   const screenText = (id) => run(`(() => { const buffer = terminalViews.get('${id}').term.buffer.active; return Array.from({ length: buffer.length }, (_, row) => buffer.getLine(row).translateToString(true)).join('\\n'); })()`);
   const pick = (id) => run(`workspace.command('open-bot', { id: '${id}' })`);
@@ -38,7 +40,7 @@ const until = async (read, why, ms = 15000) => {
   const lineFor = async (id, text) => (await screenText(id)).split('\n').includes(text);
 
   assert.equal(await live(), '', 'no shell until the user asks');
-  assert.equal(await run(`[...document.querySelectorAll('#canvas-tabs [role=tab]')].filter(b => !b.hidden).map(b => b.dataset.canvas).join()`), 'browser,screen,terminal');
+  assert.equal(await run(`[...document.querySelectorAll('#canvas-tabs [role=tab]')].filter(b => !b.hidden).map(b => b.dataset.canvas).join()`), 'screen,terminal');
   assert.equal(Menu.getApplicationMenu().getMenuItemById('canvas-terminal').accelerator, 'CmdOrCtrl+3');
 
   // Arrowing across the strip passes over Terminal without starting a shell.
@@ -46,7 +48,7 @@ const until = async (read, why, ms = 15000) => {
   await showing('terminal');
   assert.equal(await live(), '', 'arrow keys do not start a shell');
   assert.equal(await run(`!document.getElementById('terminal-idle').classList.contains('hidden') && document.getElementById('terminal-start').offsetParent !== null`), true, 'Start button offered');
-  await run(`document.getElementById('canvas-browser').click()`); await showing('browser');
+  await run(`workspace.command('canvas-tab', { tab: 'browser' })`); await showing('browser');
 
   // A click on the tab starts this bot's shell and the typed command runs.
   await run(`document.getElementById('canvas-terminal').click()`); await showing('terminal');
@@ -63,7 +65,7 @@ const until = async (read, why, ms = 15000) => {
   await until(async () => (await screenText('1001')).split('\n').includes(`${rows} ${cols}`), 'the shell has the pane size');
 
   // Leaving the tab and coming back keeps the session and its output.
-  await run(`document.getElementById('canvas-browser').click()`); await showing('browser');
+  await run(`workspace.command('canvas-tab', { tab: 'browser' })`); await showing('browser');
   assert.equal(await run(`terminalViews.get('1001').host.classList.contains('hidden')`), true);
   assert.equal(await live(), '1001');
   Menu.getApplicationMenu().getMenuItemById('canvas-terminal').click(); await showing('terminal');

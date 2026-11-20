@@ -17,7 +17,7 @@ app.whenReady().then(async () => {
   }
   assert.ok(win, 'workspace window did not open');
   for (let i = 0; i < 50; i++) {
-    const ready = await win.webContents.executeJavaScript(`document.getElementById('version-label').textContent.length > 0`);
+    const ready = await win.webContents.executeJavaScript(`typeof window.workspace === 'object' && !!document.getElementById('tabs')`);
     if (ready) break;
     await pause(100);
   }

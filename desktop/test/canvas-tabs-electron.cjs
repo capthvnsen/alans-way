@@ -72,12 +72,18 @@ const listen = (handler) => new Promise(resolve => { const s = http.createServer
     win.setSize(...size); await new Promise(resolve => setTimeout(resolve, 300));
   };
   const state = () => run('workspace.getState()');
-  const selected = () => run(`[...document.querySelectorAll('#canvas-tabs [role=tab]')].filter(b => b.getAttribute('aria-selected') === 'true').map(b => b.dataset.canvas).join()`);
+  // The pinned tabs are the canvas views other than the browser; on the browser, a page tab (or the New tab placeholder) is the selected one.
+  const selected = async () => (await run(`[...document.querySelectorAll('#canvas-tabs [role=tab]')].filter(b => b.getAttribute('aria-selected') === 'true').map(b => b.dataset.canvas).join()`))
+    || ((await state()).canvasTab === 'browser' && await run(`!!document.querySelector('#tabs .tab.active [role=tab][aria-selected=true]')`) ? 'browser' : '');
   const showing = async (tab) => {
     await until(async () => (await selected()) === tab, `${tab} tab selected`);
     assert.equal((await state()).activeTabId === 'vps', tab === 'screen', `${tab} drives the canvas`);
-    assert.equal(await run(`document.getElementById('canvas-${tab}').tabIndex`), 0, 'only the selected tab is in the Tab order');
+    if (tab === 'browser') {
+      assert.equal(await run(`[...document.querySelectorAll('#canvas-tabs [role=tab]')].some(b => b.getAttribute('aria-selected') === 'true')`), false, 'no pinned tab is selected on the browser');
+      assert.equal(await run(`document.querySelector('#tabs .tab.active [role=tab]').tabIndex`), 0, 'the active page tab is the Tab stop');
+    } else assert.equal(await run(`document.getElementById('canvas-${tab}').tabIndex`), 0, 'only the selected tab is in the Tab order');
   };
+  const goBrowser = () => run(`workspace.command('canvas-tab', { tab: 'browser' })`);
   const visible = () => run(`[...document.querySelectorAll('#canvas-tabs [role=tab]')].filter(b => !b.hidden).map(b => b.dataset.canvas).join()`);
   const canvasView = () => webContents.getAllWebContents().find(item => !item.isDestroyed() && item.session === session.fromPartition('persist:hermes-webapp') && item.getURL().includes('#/'));
   const pick = (id) => run(`workspace.command('open-bot', { id: '${id}' })`);
@@ -101,16 +107,17 @@ const listen = (handler) => new Promise(resolve => { const s = http.createServer
   // The canvas follows the bot: Scout has no choice yet and inherits the view;
   // set Scout to Browser, then each bot gets its own tab back.
   await pick('1002'); await showing('screen');
-  await run(`document.getElementById('canvas-browser').click()`); await showing('browser');
+  await goBrowser(); await showing('browser');
   await pick('1001'); await showing('screen');
   await pick('1002'); await showing('browser');
 
   // Keyboard: arrow keys on the strip, and the View menu accelerators from anywhere.
-  await run(`document.getElementById('canvas-browser').focus(); document.getElementById('canvas-browser').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))`);
-  await showing('screen');
-  assert.equal(await run('document.activeElement.id'), 'canvas-screen', 'focus follows the arrow');
+  await run(`document.getElementById('canvas-screen').focus(); document.getElementById('canvas-screen').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))`);
+  await showing('terminal');
+  assert.equal(await run('document.activeElement.id'), 'canvas-terminal', 'focus follows the arrow');
   await run(`document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }))`);
-  await showing('browser');
+  await showing('screen');
+  await goBrowser(); await showing('browser');
   const menu = Menu.getApplicationMenu();
   assert.equal(menu.getMenuItemById('canvas-screen').accelerator, 'CmdOrCtrl+2');
   menu.getMenuItemById('canvas-screen').click(); await showing('screen');
@@ -132,7 +139,7 @@ const listen = (handler) => new Promise(resolve => { const s = http.createServer
   await until(async () => (await state()).showBrowser === true, '⌘1 reopens the pane');
 
   // Without a Hermes Desktop address the strip is the four permanent tabs minus Artifacts, and no row has Cron or Settings icons.
-  assert.equal(await visible(), 'browser,screen,terminal');
+  assert.equal(await visible(), 'screen,terminal');
   assert.equal(await run(`${name}.tagName + ${name}.disabled + ${name}.hasAttribute('aria-label') + getComputedStyle(${name}.querySelector('.chat-chevron')).display`), 'BUTTONtruefalsenone', 'no Hermes Desktop: the name is plain text with no chevron');
   assert.equal(await rowIcons(), 0, 'and no icons on the rows');
   assert.equal(await run(`document.getElementById('canvas-chat')`), null, 'Side chat has no tab');
@@ -145,10 +152,10 @@ const listen = (handler) => new Promise(resolve => { const s = http.createServer
   // With one, they appear and load its pages in a Canvas view that shares the sign-in cookie.
   await session.fromPartition('persist:hermes-webapp').cookies.set({ url: address, name: 'webapp-login', value: 'yes' });
   await run(`workspace.command('settings', { hermesWebappUrl: ${JSON.stringify(address)}, chatSurface: 'telegram' })`);
-  await until(async () => (await visible()) === 'browser,screen,terminal,artifacts', 'Artifacts shown; Cron jobs and Bot settings stay off the strip');
+  await until(async () => (await visible()) === 'screen,terminal,artifacts', 'Artifacts shown; Cron jobs and Bot settings stay off the strip');
   await stripFits('four tabs');
   // The bot's name in the chat header becomes a button; its chevron shows on hover.
-  await pick('1001'); await showing('screen'); await run(`document.getElementById('canvas-browser').click()`); await showing('browser');
+  await pick('1001'); await showing('screen'); await goBrowser(); await showing('browser');
   await nameOpens(true);
   assert.equal(await run(`${name}.getAttribute('aria-label')`), 'Alan menu');
   assert.equal(await rowIcons(), 0, 'no icons on the rows');
@@ -161,11 +168,11 @@ const listen = (handler) => new Promise(resolve => { const s = http.createServer
   assert.equal(await run(`${name}.getAttribute('aria-expanded')`), 'true');
   assert.deepEqual(await run(`[...document.querySelectorAll('#chat-menu > *')].map(n => n.getAttribute('role') + ':' + n.textContent.replace('✓', '').trim())`), ['menuitemradio:Telegram', 'menuitemradio:Hermes', 'separator:', 'menuitem:Bot settings', 'menuitem:Cron jobs']);
   await run(`document.querySelector('#chat-menu [data-page="settings"]').click()`); await showing('settings');
-  assert.equal(await visible(), 'browser,screen,terminal,artifacts,settings,cron');
+  assert.equal(await visible(), 'screen,terminal,artifacts,settings,cron');
   assert.equal(await run(`${name}.getAttribute('aria-expanded')`), 'false', 'choosing an entry closes the menu');
   await stripFits('six tabs');
   await run(`document.getElementById('canvas-cron').click()`); await showing('cron');
-  assert.equal(await visible(), 'browser,screen,terminal,artifacts,settings,cron', 'both stay while either is open');
+  assert.equal(await visible(), 'screen,terminal,artifacts,settings,cron', 'both stay while either is open');
   const view = await until(canvasView, 'canvas view');
   await until(() => view.getURL() === `${address}#/cron` && !view.isLoading(), 'cron page');
   assert.equal(await view.executeJavaScript('document.title'), 'Hermes Desktop', 'signed in by the shared cookie');
@@ -179,13 +186,13 @@ const listen = (handler) => new Promise(resolve => { const s = http.createServer
   assert.equal(menu.getMenuItemById('canvas-artifacts').accelerator, 'CmdOrCtrl+4');
   menu.getMenuItemById('canvas-artifacts').click(); await showing('artifacts');
   await until(() => view.getURL() === `${address}#/artifacts`, '#/artifacts');
-  assert.equal(await visible(), 'browser,screen,terminal,artifacts', 'switching to a permanent tab drops both');
+  assert.equal(await visible(), 'screen,terminal,artifacts', 'switching to a permanent tab drops both');
   assert.equal(await view.executeJavaScript('window.kept'), 1, 'switching pages does not reload Hermes Desktop');
   assert.equal(canvasView(), view, 'one Canvas view serves every page');
   // Clicking the name again returns to the tab that was open before.
   await openPage(); await showing('settings');
   await openPage(); await showing('artifacts');
-  assert.equal(await visible(), 'browser,screen,terminal,artifacts');
+  assert.equal(await visible(), 'screen,terminal,artifacts');
   // Scout: his own name opens his Bot settings, remembered for him.
   await pick('1002'); await until(async () => (await state()).selectedBotId === '1002', 'Scout selected'); await nameOpens(true);
   assert.equal(await run(`${name}.getAttribute('aria-label')`), 'Scout menu');
@@ -197,7 +204,7 @@ const listen = (handler) => new Promise(resolve => { const s = http.createServer
   await run(`document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }))`);
   await showing('settings');
   await run(`document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }))`);
-  await showing('artifacts'); assert.equal(await visible(), 'browser,screen,terminal,artifacts');
+  await showing('artifacts'); assert.equal(await visible(), 'screen,terminal,artifacts');
   // Hermes Desktop closes its Cron overlay by navigating; picking the tab again reopens it.
   await openPage(); await run(`document.getElementById('canvas-cron').click()`); await showing('cron');
   await view.executeJavaScript(`location.hash = '#/'`);
@@ -208,15 +215,15 @@ const listen = (handler) => new Promise(resolve => { const s = http.createServer
 
   // Page tabs are remembered per bot like the others.
   await pick('1001'); await showing('artifacts');
-  assert.equal(await visible(), 'browser,screen,terminal,artifacts');
+  assert.equal(await visible(), 'screen,terminal,artifacts');
   await pick('1002'); await showing('cron');
-  assert.equal(await visible(), 'browser,screen,terminal,artifacts,settings,cron');
+  assert.equal(await visible(), 'screen,terminal,artifacts,settings,cron');
   await until(() => view.getURL() === `${address}#/cron`, 'cron again');
 
   // If Hermes Desktop goes away the canvas falls back to Browser but keeps the choice.
   statusUp = false; await run(`workspace.command('webapp-retry')`);
   await showing('browser');
-  assert.equal(await visible(), 'browser,screen,terminal');
+  assert.equal(await visible(), 'screen,terminal');
   await nameOpens(true);
   await run(`${name}.click()`);
   assert.deepEqual(await run(`[...document.querySelectorAll('#chat-menu [role^=menuitem]')].map(n => n.dataset.gateway || n.dataset.page)`), ['telegram', 'hermes-desktop'], 'no reachable pages: the gateways stay, the page entries go');
@@ -230,11 +237,11 @@ const listen = (handler) => new Promise(resolve => { const s = http.createServer
   await run(`workspace.command('settings', { hermesWebappUrl: ${JSON.stringify(privateAddress)} })`);
   await until(async () => (await state()).webappStatus === 'needs-link', 'private host checked');
   await showing('browser');
-  assert.equal(await visible(), 'browser,screen,terminal');
+  assert.equal(await visible(), 'screen,terminal');
   assert.equal(canvasView(), undefined, 'the old host’s Canvas view is closed');
   await run(`workspace.command('webapp-link', { url: 'http://127.0.0.1:9120/webapp/launch#ticket=${'T'.repeat(43)}' })`);
   // Scout was left on Cron jobs, so both page tabs are back with him.
-  await until(async () => (await visible()) === 'browser,screen,terminal,artifacts,settings,cron', 'pages after the link');
+  await until(async () => (await visible()) === 'screen,terminal,artifacts,settings,cron', 'pages after the link');
   await nameOpens(true);
   await run(`document.getElementById('canvas-cron').click()`); await showing('cron');
   const linked = await until(canvasView, 'private canvas view');

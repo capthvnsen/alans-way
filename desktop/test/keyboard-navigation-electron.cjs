@@ -182,14 +182,14 @@ app.whenReady().then(async () => {
       await focus('#tabs [role=tab][aria-selected=true]'); await key('Delete'); await frame();
       assert.equal((await getState()).tabs.length, 1);
       assert.equal(await evaluate('document.activeElement.getAttribute("role")'), 'tab');
-      await key('Delete'); await frame(); assert.equal(await active(), 'new-tab');
+      await key('Delete'); await frame(); assert.equal(await evaluate('document.activeElement.closest(".tab")?.classList.contains("placeholder")'), true, 'with no page left, focus lands on the New tab placeholder');
     });
 
     // Busy update dialogs have no enabled buttons: focus must stay on the dialog itself.
     const originalSend = wc.send.bind(wc);
     wc.send = (channel, ...args) => { if (channel !== 'workspace:state') originalSend(channel, ...args); };
     const real = await evaluate('window.workspace.getState()');
-    await focus('#update-all');
+    await focus('#new-tab');
     originalSend('workspace:state', { ...real, updateAll: { busy: true, steps: [] } }); await frame();
     await check('busy dialog contains Tab even without enabled controls', async () => {
       assert.equal(await inside('update-all-popup'), true); await key('Tab'); assert.equal(await inside('update-all-popup'), true);
@@ -197,7 +197,7 @@ app.whenReady().then(async () => {
       await key('Escape'); assert.equal(await hidden('update-all-popup'), false);
     });
     originalSend('workspace:state', real); await frame();
-    await check('automatic dialog close restores focus', async () => assert.equal(await active(), 'update-all'));
+    await check('automatic dialog close restores focus', async () => assert.equal(await active(), 'new-tab'));
     wc.send = originalSend;
   }
 
