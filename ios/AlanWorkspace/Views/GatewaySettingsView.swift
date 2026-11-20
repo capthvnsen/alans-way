@@ -60,6 +60,7 @@ struct GatewaySettingsView: View {
                 .focused($focus, equals: .username).submitLabel(.next).onSubmit { focus = .password }
                 .accessibilityIdentifier("gatewayUsername")
             SecureField("Dashboard password", text: $password)
+                .textContentType(.password)
                 .focused($focus, equals: .password).submitLabel(.go).onSubmit(submit)
                 .accessibilityIdentifier("gatewayPassword")
         } header: { Text("Hermes gateway") } footer: {
