@@ -39,12 +39,14 @@ test('only same-origin favicons may be fetched', () => {
 test('the favicon queue keeps every same-origin candidate in page order', () => {
   const page = 'https://a.example/page';
   const { targets, inline } = faviconQueue(page, ['https://cdn.other.example/x.png', 'https://a.example/one.ico', 'https://a.example/one.ico', 'https://a.example/two.png', 'data:image/png;base64,x']);
-  assert.deepEqual(targets, ['https://a.example/one.ico', 'https://a.example/two.png'], 'cross-origin candidates drop, duplicates collapse');
+  assert.deepEqual(targets, ['https://a.example/one.ico', 'https://a.example/two.png', 'https://a.example/favicon.ico'], 'cross-origin candidates drop, duplicates collapse, the origin icon is the last resort');
   assert.equal(inline, 'data:image/png;base64,x', 'a decoded inline icon stays the last fallback');
-  assert.deepEqual(faviconQueue(page, ['https://evil.example/x.png']), { targets: [], inline: '' }, 'a cross-origin url never renders directly');
+  assert.deepEqual(faviconQueue(page, ['https://evil.example/x.png']), { targets: ['https://a.example/favicon.ico'], inline: '' }, 'a cross-origin url is never fetched or rendered; only the origin icon is tried');
+  for (const scheme of ['file:///etc/passwd', 'crx://x/icon.png', 'hw-avatar:bot', 'javascript:alert(1)', 'data:text/html,x']) assert.equal(faviconQueue(page, [scheme]).inline, '', `${scheme} never becomes an inline icon`);
   assert.equal(faviconQueue(page, ['data:,']).inline, '', 'the blank-data sentinel is not an icon');
   const many = Array.from({ length: 9 }, (_, i) => `https://a.example/${i}.png`);
   assert.equal(faviconQueue(page, many).targets.length, 6, 'the serial fetch queue is bounded');
+  assert.deepEqual(faviconQueue('file:///tmp/x.html', ['file:///tmp/i.png']).targets, [], 'only http(s) pages get fetches');
 });
 test('bot-visible tab metadata seals url, title, icon and note on human-controlled tabs', () => {
   const info = { id: 't', url: 'https://a.example/private?token=1', title: 'Secret page', favicon: 'data:image/png;base64,x', controller: 'human', handoff: { phase: 'handed_off', destinationTabId: 't2', note: 'do this' } };

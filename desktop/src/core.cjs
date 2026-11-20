@@ -73,10 +73,12 @@ function faviconTarget(pageUrlValue, iconUrl) {
 
 // A page names every candidate icon; the fetch queue keeps the same-origin
 // http(s) ones in the page's own order so a cross-origin or dead first
-// candidate does not sink the tab's icon. Non-URL candidates (an inline
-// data: icon Chromium already decoded) ride along as the last fallback.
-// The queue is capped: fetches run serially, so a page naming dozens of
-// icons cannot stall the icon or hang the resolver.
+// candidate does not sink the tab's icon. Sites that name only a CDN icon
+// (GitHub) fall back to the origin's /favicon.ico, which is what a browser
+// tries too. An inline data:image icon Chromium already decoded rides along
+// as the last fallback; every other scheme (file:, crx:, javascript:) never
+// reaches the renderer. The queue is capped: fetches run serially, so a page
+// naming dozens of icons cannot stall the icon or hang the resolver.
 function faviconQueue(pageUrlValue, favicons) {
   const targets = [];
   for (const item of favicons) {
@@ -85,7 +87,9 @@ function faviconQueue(pageUrlValue, favicons) {
     const target = faviconTarget(pageUrlValue, item);
     if (target && !targets.includes(target)) targets.push(target);
   }
-  const inline = favicons.find((item) => item && item !== 'data:,' && !/^https?:\/\//i.test(item)) || '';
+  const root = faviconTarget(pageUrlValue, '/favicon.ico');
+  if (root && targets.length < 6 && !targets.includes(root)) targets.push(root);
+  const inline = favicons.find((item) => /^data:image\//i.test(String(item))) || '';
   return { targets, inline };
 }
 
