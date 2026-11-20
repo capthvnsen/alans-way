@@ -3,6 +3,7 @@
 // controller (`window.nativeChat`): no HTTP, no key, no cache here. Assistant
 // text goes through markdown-it with HTML disabled; nothing else is set as HTML.
 (() => {
+  const policy = typeof module !== 'undefined' && module.exports ? require('./compact-policy.cjs') : window.CompactPolicy;
   // A paragraph that is only `::name{key="value" ...}` is a widget block.
   const DIRECTIVE = /^::([a-z][\w-]{0,40})\{((?:\s*[\w-]{1,40}="[^"\n]{0,2000}")*)\s*\}$/i;
   function parseDirective(text) {
@@ -168,6 +169,7 @@
     let state = null, thread = null, visible = false, disposed = false;
     let shown = CHUNK, pinned = true, composing = false, growing = false, olderPending = false;
     let threadSig = '', liveSig = '', lastActive = null, paneArmed = false, threadArmed = false, tokenRun = '', frame = 0;
+    let compactOff = false, compactTimer = 0;
     let nodes = new Map();
     const drafts = new Map(), scrolls = new Map();
     // Per conversation: the message at the top of the view and how far into it (rebuilt rows have
@@ -218,6 +220,11 @@
     hint.setAttribute('role', 'status');
     middle.append(hint);
     let hintTimer;
+    const chip = el('div', 'nc-compact-chip hidden');
+    chip.setAttribute('role', 'status');
+    const chipText = el('span', 'nc-compact-text'), chipSwitch = button('nc-compact-switch', '', () => { compactOff = !compactOff; renderChip(); });
+    chipSwitch.setAttribute('role', 'switch');
+    chip.append(chipText, chipSwitch);
     const composer = el('form', 'nc-composer');
     const textarea = document.createElement('textarea');
     textarea.rows = 1;
@@ -233,7 +240,7 @@
     composer.append(textarea, sendBtn, stopBtn);
     const readOnly = el('div', 'nc-readonly hidden');
     const setup = el('div', 'nc-setup hidden');
-    root.append(head, notice, linkBanner, middle, composer, readOnly, setup);
+    root.append(head, notice, linkBanner, middle, chip, composer, readOnly, setup);
 
     async function command(name, value = {}) {
       try { return await api.command(name, value); }
@@ -306,6 +313,7 @@
 
     function card(c) {
       const box = el('div', `nc-row system`);
+      if (c.kind === 'compact') { box.append(el('div', `nc-compact-note ${c.state}`, c.text)); return box; }
       const node = el('div', `nc-prompt ${c.kind} ${c.state}`);
       box.append(node);
       if (c.kind === 'approval') {
@@ -386,7 +394,7 @@
         children.push(streamBubble);
         if (tokenRun !== streamFor) { tokenRun = streamFor; mark('first-token'); }
       }
-      const statusText = run.status === 'waiting' ? 'Waiting for you' : run.tool || (!run.text ? 'Thinking' : '');
+      const statusText = run.status === 'compacting' ? '' : run.status === 'waiting' ? 'Waiting for you' : run.tool || (!run.text ? 'Thinking' : '');
       if (statusText) {
         const line = el('div', 'nc-status');
         line.append(el('span', 'nc-dots'), document.createTextNode(statusText));
@@ -447,7 +455,9 @@
       const key = draftKey();
       mark('send');
       pinned = true;
-      const reply = await command('send', { sessionId: state?.activeId, text });
+      const optOut = compactOff && !chip.classList.contains('hidden');
+      compactOff = false;
+      const reply = await command('send', { sessionId: state?.activeId, text, ...(optOut ? { compact: false } : {}) });
       if (!reply && fromComposer && !drafts.get(key)) {
         drafts.set(key, text);
         if (draftKey() === key && !textarea.value) { textarea.value = text; grow(); }
@@ -497,6 +507,22 @@
       else return;
       event.preventDefault(); event.stopPropagation();
     });
+
+    // The note above the message box: shown when the send will compact first. The switch turns it off for the next message only.
+    const idleLabel = (ms) => { const min = Math.floor(ms / 60000); return min >= 120 ? `${Math.floor(min / 60)} h` : `${min} min`; };
+    function renderChip() {
+      const c = state?.compact;
+      const reason = c && !state.run && policy.shouldCompact({ usedTokens: c.usedTokens, windowTokens: c.windowTokens, idleMs: c.idleSince ? Date.now() - c.idleSince : NaN });
+      chip.classList.toggle('hidden', !reason);
+      if (!reason) { compactOff = false; return; }
+      const why = reason === 'high' ? `context ${Math.round(c.usedTokens / c.windowTokens * 100)}% full` : `chat idle ${idleLabel(Date.now() - c.idleSince)}`;
+      chipText.textContent = compactOff ? `Will not compact this message · ${why}` : `Will compact before sending · ${why}`;
+      chipSwitch.textContent = compactOff ? 'Off' : 'On';
+      chipSwitch.setAttribute('aria-checked', String(!compactOff));
+      chipSwitch.setAttribute('aria-label', 'Compact before sending this message');
+    }
+    // Idle time passes with nothing pushed from main, so the note re-reads the clock now and then.
+    compactTimer = setInterval(() => { if (state?.compact && !disposed) renderChip(); }, 30000);
 
     function renderNotice() {
       if (notice.dataset.flash) return;
@@ -548,6 +574,7 @@
         readOnly.replaceChildren(el('span', '', `This conversation is from ${sourceLabel(thread.source)}, so it is read-only here.`),
           button('nc-pill primary', 'Continue here', () => command('fork', { sessionId: s.activeId })));
       }
+      renderChip();
       const running = !!s.run;
       sendBtn.classList.toggle('hidden', running);
       stopBtn.classList.toggle('hidden', !running);
@@ -580,6 +607,7 @@
         const saved = scrolls.get(next.activeId || 'new');
         shown = saved?.shown || CHUNK; pinned = saved ? saved.pinned : true; nodes = new Map(); list.replaceChildren(); threadSig = '';
         if (switched) {
+          compactOff = false;
           if (state) drafts.set(draftKey(), textarea.value);
           threadArmed = visible;
         }
@@ -604,6 +632,7 @@
       },
       dispose() {
         disposed = true;
+        clearInterval(compactTimer);
         follow.disconnect();
         if (typeof unsubscribe === 'function') unsubscribe();
         root.replaceChildren();
