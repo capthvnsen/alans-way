@@ -20,6 +20,8 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    # About twice the measured p95 run (Linux 170 s, macOS 434 s); the default is 6 hours.
+    timeout-minutes: ${{ matrix.os == 'macos-latest' && 15 || 6 }}
     defaults:
       run:
         working-directory: desktop
@@ -178,6 +180,8 @@ jobs:
         os: [ubuntu-latest, macos-latest]
         python: ['3.11', '3.12']
     runs-on: ${{ matrix.os }}
+    # About twice the measured p95 run (Linux 40 s, macOS 68 s); the default is 6 hours.
+    timeout-minutes: ${{ matrix.os == 'macos-latest' && 5 || 3 }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
