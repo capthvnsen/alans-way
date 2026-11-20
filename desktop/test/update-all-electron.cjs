@@ -122,7 +122,7 @@ app.whenReady().then(async () => {
   const work = () => calls.filter((c) => !c.startsWith('check'));
 
   // The versions (Settings → About) and the details (Settings → Updates), and the update pill by the gear.
-  const versions = await waitFor(bar, (t) => t.includes('Hermes'), 12000, 'the versions');
+  const versions = await waitFor(bar, (t) => t.includes('Plugin'), 12000, 'the versions');
   assert.equal(versions, `Alan’s Workspace ${version} · Hermes 0.21.6 (server) · Plugin 0.21.0`);
   assert.equal(await evaluate('!!document.querySelector(".workspace-footer, #version-label, #update-all, #build-badge")'), false, 'no footer on the main screen');
   const tooltip = (await evaluate('window.workspace.getState()')).versions.tooltip;
