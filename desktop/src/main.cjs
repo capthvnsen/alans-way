@@ -12,7 +12,7 @@ const crypto = require('node:crypto');
 const { spawn, execFileSync } = require('node:child_process');
 const { readCapped, normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, faviconQueue, redactTabForBot, continuedOnVm, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor: requireActorCore, requireAgentRead, requireAgentClaim, takeoverDelay, reviewedHandoff, isAuthorized, sanitizeBots, errorMessage, followVmRemoteUrl, handbackRequest, liveHandback, nextHandback, dialogAnswer, answerDialog, challengeReply, captchaHandback, captchaWatchStep, cdpChallengeSafe } = require('./core.cjs');
 const { createAvatarStore, AVATAR_SCHEME } = require('./avatar-store.cjs');
-const { queueWithDeadline, resolveChatSurface, usableSurfaces, surfaceForBot, inboxRow, canvasStripTabs, keepBots, writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange, tailscaleSshHost } = require('./shell-support.cjs');
+const { sameOriginWindow, queueWithDeadline, resolveChatSurface, usableSurfaces, surfaceForBot, inboxRow, canvasStripTabs, keepBots, writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange, tailscaleSshHost } = require('./shell-support.cjs');
 const { buildAgentPrompt } = require('./agent-prompt.cjs');
 const { shouldOnboard, pinOnboarding, cloudStep, nextCloudStep, setCloudStep } = require('./onboarding.cjs');
 const cloudClaim = require('./cloud-claim.cjs');
@@ -139,6 +139,7 @@ let activeTabId = 'home', canvasTab = 'browser', activeVpsTabId = '', apiError =
 let canvasReturn = 'browser';
 let nativeChat = null, hermesHub = null, gatewayLink = null, chatTarget = 'telegram', webappStatus = 'unconfigured', webappTarget = '', webappSignInError = '', webappSignInTried = false, webappPrivate = false, canvasView = null, canvasPage = '';
 const WEBAPP_PARTITION = 'persist:hermes-webapp';
+const WEBAPP_PREFERENCES = { partition: WEBAPP_PARTITION, navigateOnDragDrop: false, contextIsolation: true, nodeIntegration: false, sandbox: true };
 // Canvas tabs beyond Browser, Bot screen and Terminal are Hermes Desktop pages (HashRouter routes). Cron jobs and Bot
 // settings are canvasTab values like the rest, but the strip shows their tab only while one is open (canvasStripTabs).
 const CANVAS_PAGES = { artifacts: '#/artifacts', cron: '#/cron', settings: '#/settings' };
@@ -529,6 +530,8 @@ function settingsWriteReceipt(entry) {
   }
   return { settingsWrite: { status, detail: record?.detail || '' }, state: getState() };
 }
+// Hermes keeps the prompt cache 5 minutes, or 1 hour when its config says so; the gateway does not report which.
+const promptCacheTtl = () => prefs.promptCacheTtl === '1h' ? '1h' : '5m';
 function getState() {
   const state = { name: app.getName(), version: app.getVersion(), releaseChannel: prefs.releaseChannel, activeReleaseChannel, build: BUILD, buildBadge: describeBuild(BUILD), bots: avatarStore.publicBots().map(bot => ({ ...bot, activity: activity.get(bot.id), hue: botAccent(bot.id).hue })), order: prefs.order, hidden: prefs.hidden,
     selectedBotId: prefs.selectedBotId, settingsFieldRevisions: { ...settingsFieldRevisions }, chatWidth: prefs.chatWidth, showBots: prefs.showBots, showBrowser: prefs.showBrowser, savedRemoteUrl: prefs.remoteUrl, remoteUrl: (() => { try { parseRemoteUrl(prefs.remoteUrl); return prefs.remoteUrl; } catch { return ''; } })(),
@@ -546,7 +549,7 @@ function getState() {
     onboarding: shouldOnboard(prefs), inApplications: process.platform === 'darwin' && app.isPackaged ? setupCheck.inRouterApplications(process.execPath) : null,
     primaryBotId: prefs.primaryBotId || (prefs.overseerBots || [])[0] || '', primaryBotPref: prefs.primaryBotId || '', overseerBots: prefs.overseerBots || [],
     botSort: prefs.botSort || 'manual',
-    autoOpenLinks: prefs.autoOpenLinks !== false, autoTakeover: prefs.autoTakeover !== false, carrySignIns: prefs.carrySignIns !== false, compactBeforeSend: prefs.compactBeforeSend !== false,
+    autoOpenLinks: prefs.autoOpenLinks !== false, autoTakeover: prefs.autoTakeover !== false, carrySignIns: prefs.carrySignIns !== false, compactBeforeSend: prefs.compactBeforeSend !== false, promptCacheTtl: promptCacheTtl(),
     // activeTabId keeps its wire meaning for the renderer: the surface on screen, 'vps' for Bot screen.
     canvasTab: shownCanvas(), canvasStrip: canvasStripTabs(shownCanvas(), webappCanvas()), webappCanvas: webappCanvas(), terminals: terminals.ids(), terminalNote, activeTabId: shownCanvas() === 'screen' ? 'vps' : shownTabId(), activeVpsTabId, browserTabHost: shownCanvas() === 'screen' && vpsTabs.has(activeVpsTabId) ? 'vps' : HOST_LABEL, browserContentsId: (() => { const contents = tabs.get(shownTabId())?.view?.webContents; return contents && !contents.isDestroyed() ? contents.id : null; })(), browserTabId: shownCanvas() === 'screen' && vpsTabs.has(activeVpsTabId) ? activeVpsTabId : activeTabId, avatarLibrary: avatarStore.publicLibrary(), avatarPreferences: prefs.avatarPreferences,
     locationDefault: prefs.locationDefault, sitePermissions: prefs.sitePermissions, extensions: extensionStore?.list() || [], downloads: downloadStore.list(),
@@ -751,14 +754,21 @@ async function loadPrivateCanvasPage(url) {
   await boundedJs(contents, `for (const [key, token] of ${JSON.stringify(grants)}) sessionStorage.setItem(key, token)`, 10000);
   if (canvasView === view) contents.loadURL(url).catch(() => {});
 }
-function guardedWebappView(url, report = () => {}) {
-  const view = new WebContentsView({ webPreferences: { partition: WEBAPP_PARTITION, navigateOnDragDrop: false, contextIsolation: true, nodeIntegration: false, sandbox: true } });
-  view.setBackgroundColor('#09090a');
-  const contents = view.webContents, { origin } = new URL(webappTarget);
-  sitePermissions.install(contents.session, 'browser');
+const webappWindows = new Set();
+// The Webapp's pop-outs (New Window, a session or the Browser in its own window) are window.open calls to its own origin
+// (apps/desktop/src/lib/browser-window.ts): they get a real window on the same partition with the view's settings. Any other
+// address goes to the Browser pane, and a window opened this way is held to the same rules.
+function guardWebappContents(contents, origin) {
   const toBrowser = (url) => { try { if (new URL(url).origin !== origin) openTelegramLink(url); } catch {} };
-  // shortcut: Webapp New Window and session pop-outs are refused here and so do nothing; allow same-origin child windows when embedding ships.
-  contents.setWindowOpenHandler(({ url }) => { toBrowser(url); return { action: 'deny' }; });
+  contents.setWindowOpenHandler(({ url }) => {
+    if (!sameOriginWindow(url, origin)) { toBrowser(url); return { action: 'deny' }; }
+    return { action: 'allow', overrideBrowserWindowOptions: { parent: win, width: 1100, height: 780, backgroundColor: '#09090a', webPreferences: WEBAPP_PREFERENCES } };
+  });
+  contents.on('did-create-window', (child) => {
+    webappWindows.add(child);
+    child.once('closed', () => webappWindows.delete(child));
+    guardWebappContents(child.webContents, origin);
+  });
   // shortcut: keeps password sign-in only, because leaving the origin breaks Nous OAuth; allowlist the provider if that is ever needed.
   const stay = (event, url) => {
     if (!event.isMainFrame) return;
@@ -768,6 +778,13 @@ function guardedWebappView(url, report = () => {}) {
   };
   contents.on('will-navigate', stay);
   contents.on('will-redirect', stay);
+}
+function guardedWebappView(url, report = () => {}) {
+  const view = new WebContentsView({ webPreferences: WEBAPP_PREFERENCES });
+  view.setBackgroundColor('#09090a');
+  const contents = view.webContents;
+  sitePermissions.install(contents.session, 'browser');
+  guardWebappContents(contents, new URL(webappTarget).origin);
   contents.on('did-navigate', (_event, url) => {
     const { pathname } = new URL(url);
     if (pathname.endsWith('/webapp/launch')) return;
@@ -802,6 +819,7 @@ async function checkWebapp() {
   const target = hermesWebappUrl(prefs.hermesWebappUrl);
   if (target !== webappTarget) {
     for (const view of [webappView, canvasView].filter(Boolean)) { win.contentView.removeChildView(view); view.webContents.close(); }
+    for (const popup of [...webappWindows]) popup.close();
     webappView = canvasView = null; canvasPage = '';
   }
   webappTarget = target;
@@ -2342,6 +2360,7 @@ function registerIpc() {
         if (typeof value.autoTakeover === 'boolean') next.autoTakeover = value.autoTakeover;
         if (typeof value.carrySignIns === 'boolean') next.carrySignIns = value.carrySignIns;
         if (typeof value.compactBeforeSend === 'boolean') next.compactBeforeSend = value.compactBeforeSend;
+        if (['5m', '1h'].includes(value.promptCacheTtl)) next.promptCacheTtl = value.promptCacheTtl;
         if (typeof value.primaryBotId === 'string') next.primaryBotId = next.bots.some((bot) => bot.id === value.primaryBotId) || value.primaryBotId === '' ? value.primaryBotId : next.primaryBotId;
         if (['ask', 'block', 'approximate'].includes(value.locationDefault)) next.locationDefault = value.locationDefault;
         if (value.chatSurface === 'native' && !nativeChat.configured) throw new Error('Save the native chat address and API key first.');
@@ -2368,7 +2387,7 @@ function registerIpc() {
         persistSettingsPreferences(next);
         if (addressChanged) { webappSignIn.forget(); webappSignInError = ''; webappSignInTried = false; checkWebapp().catch(error => logError('hermes-webapp', error)); }
         if (nativeConfig) nativeChat.configure(nativeConfig);
-        if (Object.hasOwn(value, 'compactBeforeSend')) pushNativeState();
+        if (Object.hasOwn(value, 'compactBeforeSend') || Object.hasOwn(value, 'promptCacheTtl')) pushNativeState();
         if (Object.hasOwn(value, 'chatSurface') || nativeConfig || (addressChanged && !next.hermesWebappUrl)) applySurface();
         if (Object.hasOwn(value, 'releaseChannel')) {
           holdAppInstall(false);
@@ -4011,9 +4030,8 @@ else {
     // Loads the last-open conversation from disk before the window exists, so it paints with no network.
     nativeChat = createNativeChat({
       dir: app.getPath('userData'), loadConfig: loadNativePersisted, saveConfig: saveNativePersisted,
-      // shortcut: WebSocket is opt-in until it has run against a real Hermes backend; make it the default after the VM baseline.
-      apiFactory: createGatewayApiFactory({ restFactory: createHermesApi, link: gatewayLink, transport: () => prefs.nativeTransport === 'websocket' ? 'websocket' : 'sse' }),
-      openLink: (url) => openTelegramLink(url), copyText: (text) => clipboard.writeText(text), visible: () => chatTarget === 'native', compactEnabled: () => prefs.compactBeforeSend !== false,
+      apiFactory: createGatewayApiFactory({ restFactory: createHermesApi, link: gatewayLink, transport: () => ['websocket', 'sse'].includes(prefs.nativeTransport) ? prefs.nativeTransport : '' }),
+      openLink: (url) => openTelegramLink(url), copyText: (text) => clipboard.writeText(text), visible: () => chatTarget === 'native', compactEnabled: () => prefs.compactBeforeSend !== false, cacheTtlMs: () => promptCacheTtl() === '1h' ? 60 * 60 * 1000 : 5 * 60 * 1000,
       notify: () => {
         pushNativeState();
         const native = nativeInbox(), summary = JSON.stringify([nativeChat.summary(), nativeChat.activeId, native]);

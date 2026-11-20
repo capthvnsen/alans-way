@@ -28,7 +28,15 @@ function submitError(e) {
 function createGatewayApi({ rest, link, transport = () => 'websocket' }) {
   let runCounter = 0;
   const idOf = (runId) => String(runId).split(':').slice(1, -1).join(':');
-  const usable = () => transport() !== 'sse' && !['idle', 'refused', 'stopped'].includes(link.getState().state);
+  // '' is the default, never chosen: it rides the link only once the link has worked since launch, and waits only for
+  // the first attempt. A link that never came up (older Hermes, signed out, refused address) sends over REST+SSE at once.
+  const mode = () => {
+    const t = transport();
+    if (t !== '') return t;
+    const s = link.getState();
+    return s.everLive || s.state === 'live' || (s.failures === 0 && ['connecting', 'syncing'].includes(s.state)) ? 'websocket' : 'sse';
+  };
+  const usable = () => mode() !== 'sse' && !['idle', 'refused', 'stopped'].includes(link.getState().state);
 
   async function streamChat(sessionId, text, { onEvent = () => {}, signal, clientMessageId } = {}) {
     if (!usable()) return rest.streamChat(sessionId, text, { onEvent, signal, clientMessageId });
@@ -114,7 +122,7 @@ function createGatewayApi({ rest, link, transport = () => 'websocket' }) {
     forkSession: (...a) => rest.forkSession(...a),
     streamChat,
     // False while a WebSocket send cannot go: the caller queues the message instead of trying.
-    sendReady: () => transport() === 'sse' || !HOLD_STATES.has(link.getState().state),
+    sendReady: () => mode() === 'sse' || !HOLD_STATES.has(link.getState().state),
     // The WebSocket has no run object to poll: clarify arrives as a request event.
     getRun: async (runId) => String(runId).startsWith(RUN_PREFIX) ? { pending_controls: [] } : rest.getRun(runId),
     stopRun: async (runId) => {
@@ -161,7 +169,8 @@ function wireAnswerError(e) {
 
 // Factory for `createNativeChat({ apiFactory })`. The transport is read per call,
 // so flipping the setting needs no rebuild: `sse` or an unconfigured gateway
-// sends over REST+SSE, anything else over the WebSocket.
+// sends over REST+SSE, `websocket` over the WebSocket, and '' (the default) over
+// the WebSocket once it has worked, else REST+SSE.
 function createGatewayApiFactory({ restFactory, link, transport }) {
   return (config) => createGatewayApi({ rest: restFactory(config), link, transport });
 }

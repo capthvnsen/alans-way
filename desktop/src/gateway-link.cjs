@@ -71,7 +71,7 @@ function createGatewayLink(deps = {}) {
     emitState();
   }
   function getState() {
-    return { state, since, failures, lastError, epoch: lastEpoch, live: state === 'live',
+    return { state, since, failures, lastError, everLive, epoch: lastEpoch, live: state === 'live',
       attached: [...att.values()].filter((a) => a.controller).length, socket: !!conn };
   }
 

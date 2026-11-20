@@ -79,8 +79,8 @@ function createMock({ key, chunk = 0 } = {}) {
     session.meta.last_active = now;
   }
 
-  function newSession(extra = {}) {
-    const id = `api_${Math.floor(Date.now() / 1000)}_${(nextId++).toString(16).padStart(8, '0')}`;
+  function newSession(extra = {}, wanted) {
+    const id = wanted || `api_${Math.floor(Date.now() / 1000)}_${(nextId++).toString(16).padStart(8, '0')}`;
     const meta = { id, source: 'api_server', title: null, started_at: Date.now() / 1000, last_active: Date.now() / 1000, message_count: 0, parent_session_id: null, ...extra };
     sessions.set(id, { meta, rows: [] });
     return sessions.get(id);
@@ -106,7 +106,8 @@ function createMock({ key, chunk = 0 } = {}) {
         const all = [...sessions.values()].map((s) => s.meta).filter((s) => (!title || s.title === title) && (hidden || !s.hidden)).sort((a, b) => b.last_active - a.last_active);
         return json(res, 200, { object: 'list', data: all.slice(offset, offset + limit), limit, offset, has_more: all.length > offset + limit });
       }
-      case 'POST /api/sessions': await body(req); return json(res, 201, { object: 'hermes.session', session: newSession().meta });
+      // A client-chosen id is taken as given, and a second create of it is refused (gateway/platforms/api_server.py:2586, :2624 create_conflict).
+      case 'POST /api/sessions': { const made = await body(req); if (typeof made?.id === 'string' && sessions.has(made.id)) return error(res, 409, 'session_exists', `Session already exists: ${made.id}`); return json(res, 201, { object: 'hermes.session', session: newSession({}, typeof made?.id === 'string' ? made.id : undefined).meta }); }
       case 'GET /api/sessions/:id/messages': {
         const limit = Math.min(500, Number(url.searchParams.get('limit')) || 500), offset = Number(url.searchParams.get('offset')) || 0;
         const rows = session.rows, end = Math.max(0, rows.length - offset);

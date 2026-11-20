@@ -7,13 +7,11 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { PassThrough } = require('node:stream');
-const { HermesSessionWire } = require('../src/hermes-session-wire.cjs');
 const { createGatewayLink } = require('../src/gateway-link.cjs');
 const { createGatewayApi } = require('../src/gateway-api.cjs');
 const { createNativeChat } = require('../src/native-chat.cjs');
 const { shouldCompact } = require('../src/compact-policy.cjs');
-const { createGatewayEngine } = require('./hermes-gateway-engine.cjs');
+const { createGatewayEngine, memConn } = require('./hermes-gateway-engine.cjs');
 
 const SID = 'api_1', MIN = 60 * 1000;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -22,32 +20,11 @@ async function until(pred, what, ms = 5000) {
   while (!pred()) { if (Date.now() > end) throw new Error(`timed out waiting for ${what}`); await sleep(2); }
 }
 
-function memConn(engine) {
-  const input = new PassThrough(), output = new PassThrough();
-  input.on('error', () => {});
-  const wire = new HermesSessionWire({ input, output });
-  const peer = engine.connect((o) => { if (!input.destroyed) input.write(JSON.stringify(o) + '\n'); });
-  const conn = { wire, input, epoch: engine.epoch(), close: () => engine.disconnect(peer), reset: () => { engine.disconnect(peer); input.destroy(new Error('reset')); } };
-  let rest = '';
-  output.on('data', (c) => {
-    rest += c.toString('utf8');
-    let i;
-    while ((i = rest.indexOf('\n')) >= 0) {
-      const f = JSON.parse(rest.slice(0, i)); rest = rest.slice(i + 1);
-      if (f.id === undefined) continue;
-      Promise.resolve(engine.handle(peer, f)).then((r) => { if (r !== undefined && !input.destroyed) input.write(JSON.stringify({ jsonrpc: '2.0', id: f.id, ...r }) + '\n'); });
-    }
-  });
-  setImmediate(() => input.write(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: { replay_epoch: engine.epoch() } } }) + '\n'));
-  return conn;
-}
-
 const cleanup = [];
 afterEach(() => { for (const fn of cleanup.splice(0)) fn(); });
 
 // Hermes with one conversation (SID) whose context is `context`; native chat with the websocket transport on a controllable clock.
-async function rig({ context = { used: 160000, max: 200000 }, engine: engineCfg = {}, chat: chatCfg = {}, enabled = true } = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'native-chat-compact-'));
+async function rig({ context = { used: 160000, max: 200000 }, engine: engineCfg = {}, chat: chatCfg = {}, enabled = true, dir = fs.mkdtempSync(path.join(os.tmpdir(), 'native-chat-compact-')) } = {}) {
   const engine = createGatewayEngine({ sessions: [{ id: 'sess-1', session_key: SID, title: 'One', profile: 'default' }], context, deltaCount: 2, ...engineCfg });
   const server = { gate: null, conns: [] };
   const link = createGatewayLink({
@@ -206,3 +183,50 @@ test('while a reply is running there is no chip and no second send, so nothing c
   await until(() => r.idle(), 'the reply to finish');
   assert.equal(r.engine.compresses.length, 0);
 });
+
+// A resumed conversation has no context size on Hermes until its next reply: the chip comes from what the app saw last time.
+test('after a restart the chip shows the last known context size although Hermes reports none yet', async () => {
+  const first = await rig();
+  await until(() => first.chat.getState().compact, 'Hermes to report the context size');
+  first.chat.flush();
+  const second = await rig({ dir: first.dir, context: null });
+  await sleep(50);
+  assert.equal(second.engine.session('sess-1').context, null, 'Hermes reports no context for this session');
+  const c = second.chat.getState().compact;
+  assert.deepEqual([c.usedTokens, c.windowTokens], [160000, 200000]);
+});
+
+test('a kept context size is dropped when a newer reply exists, and a number from Hermes replaces it', async () => {
+  const seed = (dir) => {
+    const at = Date.now() - 10 * MIN, reply = Date.now() / 1000;
+    fs.mkdirSync(path.join(dir, 'native-chat-cache'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'native-chat-cache', `${SID}.json`), JSON.stringify({ sessionId: SID, hasOlder: false, ctx: { used: 160000, max: 200000, at },
+      messages: [{ id: 1, role: 'user', text: 'q', ts: reply - 5 }, { id: 2, role: 'assistant', text: 'a', ts: reply }] }));
+  };
+  const stale = fs.mkdtempSync(path.join(os.tmpdir(), 'native-chat-compact-'));
+  seed(stale);
+  const r = await rig({ dir: stale, context: null });
+  await sleep(50);
+  assert.equal(r.chat.getState().compact, null, 'a number older than the newest reply is not trusted');
+  const fresh = fs.mkdtempSync(path.join(os.tmpdir(), 'native-chat-compact-'));
+  seed(fresh);
+  const live = await rig({ dir: fresh, context: { used: 50000, max: 200000 } });
+  await until(() => live.chat.getState().compact?.usedTokens === 50000, 'the number from Hermes');
+});
+
+// The prompt cache lives 5 minutes, or 1 hour on a Hermes configured so; the Settings choice decides which one "idle" means.
+for (const [name, ttlMs, compresses] of [['5 minutes', 5 * MIN, 1], ['1 hour', 60 * MIN, 0]]) {
+  test(`idle for 30 minutes with the cache lifetime at ${name}: ${compresses ? 'compacts' : 'does not compact'}`, async () => {
+    const r = await rig({ context: { used: 60000, max: 200000 }, chat: { cacheTtlMs: () => ttlMs } });
+    await until(() => r.chat.getState().compact, 'usage');
+    await r.chat.command('send', { sessionId: SID, text: 'first' });
+    await until(() => r.engine.submits.length === 1 && r.idle(), 'the first message');
+    r.clock.ms += 30 * MIN;
+    const c = r.chat.getState().compact;
+    assert.equal(c.cacheTtlMs, ttlMs, 'the chip reads the same lifetime');
+    assert.equal(shouldCompact({ ...c, idleMs: r.clock.ms - c.idleSince }), compresses ? 'stale' : null);
+    await r.chat.command('send', { sessionId: SID, text: 'second' });
+    await until(() => r.engine.submits.length === 2 && r.idle(), 'the second message');
+    assert.equal(r.engine.compresses.length, compresses);
+  });
+}
