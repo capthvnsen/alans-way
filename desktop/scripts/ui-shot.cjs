@@ -78,7 +78,7 @@ if (!process.versions.electron) {
     const overlay = state => {
       const inbox = JSON.parse(JSON.stringify(state.inbox || {}));
       if (inbox['1005']?.rows?.native) inbox['1005'].rows.native.waiting = true;
-      if (inbox['1003']) inbox['1003'].surface = 'hermes-desktop';
+      for (const [id, row] of Object.entries(inbox)) row.surface = id === '1003' ? 'hermes-desktop' : 'native';
       return { ...state, inbox, webappStatus: 'unreachable',
         bots: state.bots.map(bot => bot.id === '1004' ? { ...bot, activity: { state: 'active', label: 'Typing', expiresAt: Date.now() + 3.6e6 } }
           : bot.id === '1001' || bot.id === '1002' ? { ...bot, activity: { state: 'idle' } } : bot) };
@@ -111,10 +111,15 @@ if (!process.versions.electron) {
     await until(() => run(`document.querySelectorAll('#bot-list .bot-row').length === ${bots.length}`), 'bot rows');
     if (wanted('home')) await shoot('home');
 
-    const conversation = (await run('nativeChat.getState()')).sessions.find(s => s.title === 'pong: hello world');
+    const conversation = await until(async () => (await run('nativeChat.getState()')).sessions?.find(s => s.title === 'pong: hello world'), 'the mock conversation');
     await run(`nativeChat.command('open', { sessionId: ${JSON.stringify(conversation.id)} })`);
     await until(() => run(`document.querySelectorAll('#native-pane .nc-row[data-id]').length > 1`), 'chat messages');
-    if (wanted('chat')) await shoot('chat');
+    // Rendering the long reply grows the list after the first paint, so each shot waits for the bottom to hold still.
+    const bottom = async () => {
+      const edge = () => run(`(() => { const s = document.querySelector('#native-pane .nc-scroll'); s.scrollTop = s.scrollHeight; return s.scrollHeight; })()`);
+      for (let last = -1, now = await edge(); now !== last; await sleep(250)) { last = now; now = await edge(); }
+    };
+    if (wanted('chat')) { await bottom(); await shoot('chat'); }
 
     if (wanted('compact')) {
       // The chip shows when the send would compact first; the engine only knows context size on a live gateway.
@@ -122,6 +127,7 @@ if (!process.versions.electron) {
         : channel === 'native:state' ? { ...payload, compact: { usedTokens: 164000, windowTokens: 200000, idleSince: Date.now() } } : payload, ...rest);
       send('native:state', { ...(await run('nativeChat.getState()')), compact: { usedTokens: 164000, windowTokens: 200000, idleSince: Date.now() } });
       await until(() => run(`!document.querySelector('.nc-compact-chip')?.classList.contains('hidden')`), 'compact chip');
+      await bottom();
       await shoot('compact');
     }
 
