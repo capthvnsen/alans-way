@@ -58,7 +58,8 @@ const { ListToolsRequestSchema, CallToolRequestSchema } = require('@modelcontext
 
 const index = process.argv.indexOf('--bot-id');
 const botId = index >= 0 ? process.argv[index + 1] : '';
-if (!botId || botId.length > 100 || /[\r\n]/.test(botId)) {
+// The id travels in an HTTP header: anything outside printable ASCII would fail the fetch and read as an outage.
+if (!botId || botId.length > 100 || /[^\x20-\x7e]/.test(botId)) {
   process.stderr.write('Usage: node browser-mcp.cjs --bot-id YOUR_BOT_ID [--bot-name DISPLAY_NAME]\n'); process.exit(1);
 }
 const nameIndex = process.argv.indexOf('--bot-name');
@@ -223,6 +224,35 @@ const tools = [
 - To learn a recording, get it and turn it into a reusable skill: If your client has skill tools, use them; in Hermes, call skill_manage with one create operation whose SKILL.md has frontmatter (a lowercase-hyphenated name and when to use it) and a body that replays the task with cua_alans_way_action: open the start url, do each step by finding the control with that role and name in the current elements (the selector is a fallback), and confirm each page change. Make every redacted or task-specific value an input the skill asks the user for; where a password, card or code was entered, release the tab with a reason instead of typing it. Tell the user the skill's name; skill_view shows it.`,
     inputSchema: objectSchema({ action: { type: 'string', enum: ['list', 'get'] }, id: { type: 'string', description: 'For get: the recording id from list.' } }, ['action']), annotations: { readOnlyHint: true } },
 ];
+// Checks the schema subset the tools use. Fields a schema does not list pass untouched: the plugin adds
+// approval and hosts add their own, so only what is declared is held to its type.
+function schemaProblem(schema, value, where) {
+  if (!schema || value === undefined) return '';
+  const type = schema.type, kind = Array.isArray(value) ? 'array' : value === null ? 'null' : typeof value;
+  if (type === 'integer' ? !Number.isInteger(value) : type === 'number' ? kind !== 'number' || !Number.isFinite(value) : type && kind !== type)
+    return `${where} must be ${type === 'integer' ? 'an integer' : `a ${type}`}`;
+  if (schema.enum && !schema.enum.includes(value)) return `${where} must be one of ${schema.enum.join(', ')}`;
+  if (kind === 'number') {
+    if (schema.minimum !== undefined && value < schema.minimum) return `${where} must be at least ${schema.minimum}`;
+    if (schema.maximum !== undefined && value > schema.maximum) return `${where} must be at most ${schema.maximum}`;
+    if (schema.exclusiveMinimum !== undefined && value <= schema.exclusiveMinimum) return `${where} must be above ${schema.exclusiveMinimum}`;
+  }
+  if (kind === 'string') {
+    if (schema.minLength !== undefined && value.length < schema.minLength) return `${where} is too short`;
+    if (schema.maxLength !== undefined && value.length > schema.maxLength) return `${where} is too long`;
+  }
+  if (type === 'object') {
+    for (const key of schema.required || []) if (value[key] === undefined) return `${where ? where + '.' : ''}${key} is required`;
+    for (const [key, sub] of Object.entries(schema.properties || {})) {
+      const problem = schemaProblem(sub, value[key], `${where ? where + '.' : ''}${key}`);
+      if (problem) return problem;
+    }
+  }
+  if (type === 'array' && schema.items)
+    for (let i = 0; i < Math.min(value.length, 200); i++) { const problem = schemaProblem(schema.items, value[i], `${where}[${i}]`); if (problem) return problem; }
+  return '';
+}
+const toolsByName = new Map(tools.map((tool) => [tool.name, tool]));
 // Keep the two request strings separate even when either contains a delimiter.
 let legacyCredentialWarned = false;
 const connectionKey = connection => JSON.stringify([String(connection.url), String(connection.token), String(connection.botId)]);
@@ -492,9 +522,14 @@ server.setRequestHandler(CallToolRequestSchema, async ({ params }, extra) => cal
   try {
     checkCall();
     const args = params.arguments || {}; let result;
+    const tool = toolsByName.get(params.name);
+    if (!tool) throw new Error(`Unknown tool ${JSON.stringify(String(params.name).slice(0, 80))}. Nothing was sent; list the tools and use one of those names.`);
+    if (args === null || typeof args !== 'object' || Array.isArray(args)) throw new Error('Tool arguments must be an object. No request was sent.');
     if (['cua_alans_way_action', 'cua_alans_way_snapshot', 'cua_alans_way_screenshot', 'cua_alans_way_close'].includes(params.name)
         && (typeof args.tabId !== 'string' || !args.tabId.trim()))
       throw new Error('Pass a nonempty tabId from cua_alans_way_tabs before using this tool. No request was sent.');
+    const invalid = schemaProblem(tool.inputSchema, args, '');
+    if (invalid) throw new Error(`Invalid arguments for ${params.name}: ${invalid}. No request was sent.`);
     const computer = params.name.startsWith('workspace_computer_') ? await computerService() : null;
     if (params.name.startsWith('workspace_computer_') && args.windowId !== undefined && !computer && !hostChoice.windowBinding)
       throw new Error('This host cannot select a window. Update it before retrying.');

@@ -49,6 +49,46 @@ test('tools/list answers without touching the app and every tool has a schema', 
   assert.deepEqual(app.log, []);
 });
 
+test('an unknown tool is a tool error that names the tool, and nothing is sent', { timeout: 15000 }, async (t) => {
+  const { app, connector } = await rig(t);
+  const result = await connector.call('cua_alans_way_nope');
+  assert.equal(result.isError, true);
+  assert.match(text(result), /cua_alans_way_nope/);
+  assert.deepEqual(app.log, []);
+});
+
+test('arguments are checked against the tool schema before anything is sent', { timeout: 15000 }, async (t) => {
+  const { app, connector } = await rig(t);
+  const cases = [
+    ['cua_alans_way_action', action({ epoch: 'three' }), /epoch/],
+    ['cua_alans_way_action', action({ action: 'format_disk' }), /action/],
+    ['cua_alans_way_action', { tabId: 'tab1', epoch: 3 }, /action/],
+    ['cua_alans_way_action', action({ steps: 'click' }), /steps/],
+    ['cua_alans_way_snapshot', { tabId: 'tab1', maxChars: '9' }, /maxChars/],
+    ['cua_alans_way_screenshot', { tabId: 'tab1', format: 'gif' }, /format/],
+    ['cua_alans_way_open', { url: 42 }, /url/],
+    ['cua_alans_way_close', { tabId: 'tab1' }, /epoch/],
+    ['workspace_computer_snapshot', { pid: '../../v1/tabs' }, /pid/],
+    ['workspace_computer_action', { pid: 5, action: 'click', x: 'left' }, /\bx\b/],
+    ['cua_alans_way_recordings', { action: 'drop' }, /action/],
+  ];
+  for (const [name, args, pattern] of cases) {
+    const result = await connector.call(name, args);
+    assert.equal(result.isError, true, `${name} ${JSON.stringify(args)} must be refused`);
+    assert.match(text(result), pattern);
+    assert.match(text(result), /No request was sent|Nothing was sent/);
+  }
+  assert.deepEqual(app.log, []);
+});
+
+test('fields the schema does not list still pass: approval and host extensions are the plugin and app\'s to define', { timeout: 15000 }, async (t) => {
+  const { app, connector } = await rig(t, (entry, json) => json(200, entry.url === '/v1/status' ? { capabilities: ['approval-binding-v1'] } : { dispatched: true }));
+  const result = await connector.call('cua_alans_way_action', action({ approval: { version: 1 }, futureField: true }));
+  assert.ok(!result.isError, text(result));
+  const post = app.log.find((e) => e.method === 'POST');
+  assert.equal(JSON.parse(post.body).futureField, true);
+});
+
 test('closing stdin mid-call aborts the request to the app and exits promptly', { timeout: 15000 }, async (t) => {
   let release;
   const { app, connector } = await rig(t, (_e, json, res) => new Promise((resolve) => { release = () => { json(200, { dispatched: true }); resolve(); }; res.on('close', resolve); }));
@@ -244,3 +284,9 @@ test('a reply with no image is a tool error, not a protocol failure', { timeout:
   assert.match(text(result), /no image/);
 });
 
+test('a bot id that cannot travel in an HTTP header is refused at startup', { timeout: 10000 }, async () => {
+  const { spawnSync } = require('node:child_process');
+  const run = spawnSync(process.execPath, [CONNECTOR, '--bot-id', 'bøt'], { encoding: 'utf8' });
+  assert.equal(run.status, 1);
+  assert.match(run.stderr, /Usage/);
+});
