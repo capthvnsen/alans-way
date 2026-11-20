@@ -127,5 +127,7 @@ function screenshotClip(viewport, rawCrop, maxWidth) {
 // Agent tabs open as background windows; a hidden page clamps its timers and
 // stops rAF, which stalls every settle wait. Appended to the configured args so
 // an app update applies them on the next Chromium start (the last copy wins).
-const AGENT_BROWSER_FLAGS = ['--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'];
+// Sync and the default-browser check do nothing on an agent VM. No --disable-features
+// here: Chromium keeps only the last one, which would silently replace the user's own.
+const AGENT_BROWSER_FLAGS = ['--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows', '--disable-sync', '--no-default-browser-check'];
 module.exports = { screenshotClip, CDP, AGENT_BROWSER_FLAGS };

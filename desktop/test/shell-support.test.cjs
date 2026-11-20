@@ -307,6 +307,16 @@ test('a queued task that never settles is released at its deadline and the next 
   assert.equal(timedOut, 1);
 });
 
+test('tailscaleSshHostAsync resolves non-blocking without execFileSync', async () => {
+  const { tailscaleSshHostAsync } = require('../src/shell-support.cjs');
+  const seen = [];
+  const run = async (file, argv) => { seen.push([file, argv]); return `${fixtureTailnet}\n`; };
+  assert.equal(await tailscaleSshHostAsync({ platform: 'darwin', username: 'me', run, exists: () => true }), `me@${fixtureTailnet}`);
+  assert.deepEqual(seen[0], ['/Applications/Tailscale.app/Contents/MacOS/Tailscale', ['ip', '-4']]);
+  assert.equal(await tailscaleSshHostAsync({ platform: 'linux', username: 'me', run: async () => { throw new Error('missing'); } }), '');
+  assert.equal(await tailscaleSshHostAsync({ platform: 'linux', username: '', run }), '');
+});
+
 test('an embedded Hermes Desktop pop-out becomes a window only for an http(s) address on its own origin', () => {
   const { sameOriginWindow } = require('../src/shell-support.cjs');
   const origin = 'https://hermes.example.ts.net:8443';

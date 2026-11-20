@@ -244,3 +244,9 @@ test('an installed shared login is preserved until broker separation is selected
     else process.env.HERMES_WORKSPACE_REQUIRE_BROKER_SSH = prior;
   }
 });
+
+test('agent Chromium flags never carry a switch that replaces one the user configured', () => {
+  const { AGENT_BROWSER_FLAGS } = require('../src/cdp.cjs');
+  assert.ok(AGENT_BROWSER_FLAGS.includes('--disable-sync') && AGENT_BROWSER_FLAGS.includes('--no-default-browser-check'));
+  assert.ok(AGENT_BROWSER_FLAGS.every((flag) => !/^--(disable-features|enable-features|user-agent|proxy-server)\b/.test(flag)));
+});
