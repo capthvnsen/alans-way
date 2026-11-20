@@ -1619,7 +1619,7 @@ const checkVersionsWhenIdle = () => {
   checkVmVersions().catch((error) => logError('vm-check', error));
 };
 const webappSignIn = createWebappSignIn({ safeStorage, getPreferences: () => prefs, savePreferences: () => persistSettingsPreferences(prefs) });
-const browserSessionStore = createBrowserSessionStore({ WebContentsView, safeStorage, getPreferences: () => prefs, savePreferences: () => persistSettingsPreferences(prefs) });
+const browserSessionStore = createBrowserSessionStore({ WebContentsView, safeStorage, getPreferences: () => prefs, savePreferences: () => persistSettingsPreferences(prefs), mark: bootTimer.mark });
 async function saveBrowserSession() {
   savePreferences();
   await Promise.all(['persist:browser', 'persist:telegram', ...(webappView || canvasView ? [WEBAPP_PARTITION] : [])].map(async partition => {
