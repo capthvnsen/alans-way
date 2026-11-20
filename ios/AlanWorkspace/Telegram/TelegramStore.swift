@@ -451,7 +451,6 @@ public final class TelegramStore {
                 historyLoadedChatIDs.removeAll()
                 selectedChatID = nil
                 self.client = nil
-                self.manager = nil
                 connectionStatus = nil
                 waitingForParameters = false
                 parametersRequestInFlight = false
