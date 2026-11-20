@@ -5,7 +5,7 @@ if (process.argv[2] === '--version') { process.stdout.write(`workspace-mcp ${VER
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { calls, context, remainingMs, checkCall, READ_BUDGET_MS } = require('../src/call-budget.cjs');
+const { calls, context, remainingMs, checkCall, waitInCall, READ_BUDGET_MS } = require('../src/call-budget.cjs');
 // Computer drivers are per-OS. An SSH-spawned process cannot drive the
 // desktop: on Windows it sits in Session 0, and on macOS TCC credits
 // Accessibility and Screen Recording to the SSH session, not the app. So when
@@ -227,10 +227,38 @@ const tools = [
 let legacyCredentialWarned = false;
 const connectionKey = connection => JSON.stringify([String(connection.url), String(connection.token), String(connection.botId)]);
 const desktopBusyText = (data, machine = 'Mac') => `desktop_busy: The ${machine} is being used by ${data.holder}; try again in ${data.retryAfter} s. Reads still work. A lease ends after 20 idle seconds, so another agent can take the ${machine} between your calls: once it is free, take a fresh workspace_computer_snapshot before acting. Nothing was sent.`;
-async function requestOnce(endpoint, method = 'GET', body, epoch, approvedConnection) {
+// The app refuses bodies over 100000 bytes (readJson in main.cjs), after which the outcome would read as uncertain.
+const MAX_BODY_BYTES = 100000, MAX_REPLY_BYTES = 16 * 1024 * 1024;
+const RETRY_DELAYS_MS = [250, 750];
+const connectionKeyNow = () => { try { return connectionKey(JSON.parse(fs.readFileSync(file, 'utf8'))); } catch { return ''; } };
+// An oversized screenshot or reply must not be buffered whole in the connector.
+async function readCapped(response) {
+  const tooLarge = () => Object.assign(new Error(`The app's reply is too large (over ${MAX_REPLY_BYTES >> 20} MB) and was dropped. Ask for less: a smaller maxWidth, a crop or a lower quality.`), { oversize: true });
+  if (Number(response.headers?.get?.('content-length')) > MAX_REPLY_BYTES) throw tooLarge();
+  const reader = response.body?.getReader?.();
+  if (!reader) return response.text();
+  const chunks = []; let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.length;
+    if (size > MAX_REPLY_BYTES) { reader.cancel().catch(() => {}); throw tooLarge(); }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+const connectRefused = (cause) => cause?.cause?.code === 'ECONNREFUSED' || (Array.isArray(cause?.cause?.errors) && cause.cause.errors.length > 0 && cause.cause.errors.every((e) => e.code === 'ECONNREFUSED'));
+async function requestAttempt(endpoint, method = 'GET', body, epoch, approvedConnection) {
   checkCall();
+  const payload = body !== undefined ? JSON.stringify(body) : undefined;
+  if (payload !== undefined && Buffer.byteLength(payload) > MAX_BODY_BYTES)
+    throw new Error(`This request is too large (over ${MAX_BODY_BYTES} bytes) for the app to accept. No request was sent. Send less text, or split it into smaller steps.`);
   let connection;
-  try { connection = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { throw new Error('Configured browser unavailable: start its app or browser host first.'); }
+  try { connection = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (cause) {
+    // A file caught mid-rewrite during an app restart reads again in a moment; a missing one never will.
+    if (cause?.code === 'ENOENT') throw new Error('Configured browser unavailable: start its app or browser host first.');
+    throw Object.assign(new Error('Configured browser unavailable: its connection file could not be read (the app may be restarting). Nothing was sent; retry in a moment.'), { retryable: true });
+  }
   if ((connection.botId !== undefined && connection.botId !== botId) || (process.env.HERMES_WORKSPACE_REQUIRE_BOT_CREDENTIALS === '1' && connection.botId !== botId)) throw new Error('Configured credentials belong to another bot or the broker. Provision a per-bot connection file.');
   if (connection.botId === undefined && !legacyCredentialWarned) {
     legacyCredentialWarned = true;
@@ -263,11 +291,19 @@ async function requestOnce(endpoint, method = 'GET', body, epoch, approvedConnec
   let response, raw;
   try {
     response = await fetch(new URL(endpoint, url), { method, headers: { Authorization: `Bearer ${connection.token}`, 'X-Hermes-Bot': botId, ...(botName ? { 'X-Hermes-Bot-Name': botName } : {}), ...(Number.isInteger(epoch) ? { 'X-Control-Epoch': String(epoch) } : {}), ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...(Number.isFinite(remainingMs()) ? { 'X-Alans-Way-Remaining-Ms': String(Math.floor(remainingMs())) } : {}) },
-      ...(body !== undefined ? { body: JSON.stringify(body) } : {}), signal: callerSignal ? AbortSignal.any([signal, callerSignal]) : signal });
+      ...(payload !== undefined ? { body: payload } : {}), signal: callerSignal ? AbortSignal.any([signal, callerSignal]) : signal });
     // Headers can arrive before the service disconnects or its body stalls.
     // Either failure leaves an action's outcome uncertain; never replay it.
-    raw = await response.text();
-  } catch {
+    raw = await readCapped(response);
+  } catch (cause) {
+    // A refused connection proves nothing was sent, so it is safe to retry and never "uncertain".
+    if (!response && connectRefused(cause))
+      throw Object.assign(failure("Configured browser unavailable: its app is not running at the saved address (connection refused). Nothing was sent. Ask the user to start Alan's Workspace, or the browser host, then retry.", 'transport'), { retryable: true });
+    if (cause?.oversize) {
+      const error = failure(cause.message, 'transport', response?.status);
+      if (actionTab || controlTab || computerAction) throw uncertainAction(error);
+      throw error;
+    }
     const error = failure(`Browser ${controlTab ? 'control' : 'action'} response unavailable or timed out.`, 'transport', response?.status);
     if (actionTab || controlTab || computerAction) throw uncertainAction(error);
     error.message = 'Configured browser unavailable or timed out. Inspect existing task state before retrying an action.';
@@ -280,6 +316,9 @@ async function requestOnce(endpoint, method = 'GET', body, epoch, approvedConnec
     throw failure(`Browser request failed (${response.status})${excerpt ? `: ${excerpt}` : ''}`, 'http-invalid-json', response.status);
   }
   if (!response.ok) {
+    // Authentication runs before any routing, so a 401 never ran anything, whatever the endpoint.
+    if (response.status === 401)
+      throw Object.assign(failure(`The app rejected this connector's credentials (401${typeof data?.error === 'string' ? ': ' + data.error.slice(0, 80) : ''}): it restarted with a new token or this agent is no longer paired. Nothing ran. Retry once; if it persists, ask the user to reconnect the agent in Alan's Workspace.`, 'http-json', 401, data), { retryable: true });
     if (response.status === 409 && data?.error === 'desktop_busy')
       throw failure(desktopBusyText(data), 'http-json', response.status, { code: data.error });
     if (response.status === 403 && data?.error === 'desktop_approval_required')
@@ -314,6 +353,17 @@ async function requestOnce(endpoint, method = 'GET', body, epoch, approvedConnec
       || (data.code !== undefined && data.code !== null && data.code !== '')))
     throw uncertainAction(failure(`Missing or invalid browser control receipt (${response.status}).`, 'http-json', response.status, data));
   return data;
+}
+async function requestOnce(...args) {
+  for (let attempt = 0; ; attempt++) {
+    const before = connectionKeyNow();
+    try { return await requestAttempt(...args); } catch (error) {
+      if (!error.retryable || attempt >= RETRY_DELAYS_MS.length) throw error;
+      // A rejected token only changes if the app wrote a different connection.
+      if (error.browserRequest?.status === 401 && connectionKeyNow() === before) throw error;
+      try { await waitInCall(new Promise((resolve) => setTimeout(resolve, RETRY_DELAYS_MS[attempt]))); } catch (stop) { throw stop.code === 'cancelled' ? stop : error; }
+    }
+  }
 }
 let hostCaps = { key: '', list: null };
 // name targets arrived after the loopback API, so ask the host once per
@@ -475,6 +525,7 @@ server.setRequestHandler(CallToolRequestSchema, async ({ params }, extra) => cal
         q.set('maxWidth', String(Number.isInteger(args.maxWidth) ? args.maxWidth : 960));
         if (args.crop !== undefined) q.set('crop', JSON.stringify(args.crop));
         const shot = await request(`${tabPath}/screenshot${q.size ? '?' + q : ''}`);
+        if (typeof shot?.base64 !== 'string' || typeof shot.mimeType !== 'string') throw new Error('The app returned no image for this tab. Take a snapshot instead, or try again.');
         const shotNote = { viewport: shot.viewport, ...(shot.crop ? { crop: shot.crop } : {}), note: shot.crop
           ? 'Pointer coordinates use CSS viewport pixels. For image pixel (px, py), use x = crop.x + px * crop.width / image width and y = crop.y + py * crop.height / image height.'
           : 'Pointer coordinates use CSS viewport pixels; the image is downscaled to maxWidth, so scale screenshot pixels by viewport.width / image width.' };
@@ -503,6 +554,7 @@ server.setRequestHandler(CallToolRequestSchema, async ({ params }, extra) => cal
         const shot = computer
           ? await computer.screenshot(args.pid, args.maxWidth, { windowId: args.windowId, bot: botId })
           : await request(`/v1/computer/${encodeURIComponent(String(args.pid))}/screenshot${Number.isInteger(args.maxWidth) || args.windowId !== undefined ? `?${new URLSearchParams({ ...(Number.isInteger(args.maxWidth) ? { maxWidth: args.maxWidth } : {}), ...(args.windowId !== undefined ? { windowId: args.windowId } : {}) })}` : ''}`);
+        if (typeof shot?.image !== 'string') throw new Error('The app returned no image for this window. Take a snapshot instead, or try again.');
         return { content: [
           { type: 'image', data: shot.image, mimeType: 'image/jpeg' },
           { type: 'text', text: JSON.stringify({
@@ -570,7 +622,7 @@ server.setRequestHandler(CallToolRequestSchema, async ({ params }, extra) => cal
 }));
 if (process.argv.includes('--health')) {
   // Only named fields are printed: the status reply is the host's to extend.
-  requestOnce('/v1/status').then(
+  requestAttempt('/v1/status').then(
     (status) => process.stdout.write(JSON.stringify({ ok: true, version: VERSION, node: process.version, capabilities: Array.isArray(status?.capabilities) ? status.capabilities : [] }) + '\n'),
     (error) => { process.exitCode = 1; process.stdout.write(JSON.stringify({ ok: false, version: VERSION, node: process.version, error: error.message }) + '\n'); },
   );

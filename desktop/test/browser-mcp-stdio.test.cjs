@@ -109,6 +109,85 @@ test('the caller deadline reaches the app, whole or fractional, and an expired b
   assert.equal(app.log.length, before, 'an expired call never dispatches');
 });
 
+test('the app not running: a clear error, nothing is reported as possibly executed', { timeout: 15000 }, async (t) => {
+  const app = await fakeApp((_e, json) => json(200, {}));
+  const conn = tempConnection(app);
+  const port = app.port;
+  await app.close();
+  const connector = startConnector({ connection: conn.file });
+  t.after(async () => { await connector.stop(); conn.cleanup(); });
+  await connector.initialize();
+  const act = await connector.call('cua_alans_way_action', action());
+  assert.equal(act.isError, true);
+  assert.match(text(act), /not running|refused|not reachable/i);
+  assert.match(text(act), /Nothing was sent/);
+  assert.doesNotMatch(text(act), /may have executed|Do not repeat/);
+  assert.equal(act._meta?.browserRequest?.uncertainOutcome, undefined);
+  const read = await connector.call('cua_alans_way_tabs');
+  assert.match(text(read), /not running|refused|not reachable/i);
+  assert.ok(port > 0);
+});
+
+test('an app that restarts on a new port and token between calls is picked up, even mid-call', { timeout: 20000 }, async (t) => {
+  const first = await fakeApp((_e, json) => json(200, { dispatched: true, from: 'first' }));
+  const conn = tempConnection(first);
+  const connector = startConnector({ connection: conn.file });
+  const seconds = [];
+  t.after(async () => { await connector.stop(); await first.close(); for (const a of seconds) await a.close(); conn.cleanup(); });
+  await connector.initialize();
+  assert.equal(JSON.parse(text(await connector.call('cua_alans_way_tabs'))).from, 'first');
+  await first.close();
+  const second = await fakeApp((entry, json) => entry.headers.authorization === 'Bearer second-token' ? json(200, { dispatched: true, from: 'second' }) : json(401, { error: 'Unauthorized' }));
+  seconds.push(second);
+  setTimeout(() => writeConnection(conn.file, second, { token: 'second-token' }), 300);
+  const result = await connector.call('cua_alans_way_action', action());
+  assert.ok(!result.isError, text(result));
+  assert.equal(JSON.parse(text(result)).from, 'second');
+  assert.equal(second.log.filter((e) => e.method === 'POST').length, 1, 'the action reached the new app exactly once');
+});
+
+test('a connection file caught mid-write is retried, not reported as an app that is not installed', { timeout: 15000 }, async (t) => {
+  const { app, conn, connector } = await rig(t);
+  fs.writeFileSync(conn.file, '{"url":"http://127.0');
+  setTimeout(() => writeConnection(conn.file, app), 150);
+  const result = await connector.call('cua_alans_way_tabs');
+  assert.ok(!result.isError, text(result));
+});
+
+test('a rejected token is reported as a credentials problem and the action is known not to have run', { timeout: 15000 }, async (t) => {
+  const { app, connector } = await rig(t, (_e, json) => json(401, { error: 'Unauthorized' }));
+  const result = await connector.call('cua_alans_way_action', action());
+  assert.equal(result.isError, true);
+  assert.match(text(result), /credentials|token|connection/i);
+  assert.match(text(result), /Nothing (ran|was sent)/);
+  assert.doesNotMatch(text(result), /may have executed|Do not repeat/);
+  assert.equal(result._meta?.browserRequest?.uncertainOutcome, undefined);
+  assert.ok(app.log.length >= 1);
+});
+
+test('a request the app would refuse as too large is stopped before it is sent', { timeout: 15000 }, async (t) => {
+  const { app, connector } = await rig(t);
+  const result = await connector.call('cua_alans_way_action', action({ action: 'type', text: 'x'.repeat(120000) }));
+  assert.equal(result.isError, true);
+  assert.match(text(result), /too large/i);
+  assert.match(text(result), /No request was sent|Nothing was sent/);
+  assert.deepEqual(app.log, []);
+});
+
+test('an oversized app reply is refused instead of buffered without bound', { timeout: 30000 }, async (t) => {
+  const { connector } = await rig(t, (_e, json, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.write('{"base64":"');
+    const chunk = 'A'.repeat(1 << 20);
+    let sent = 0;
+    const pump = () => { while (sent < 100 && !res.destroyed) { sent++; if (!res.write(chunk)) return res.once('drain', pump); } if (!res.destroyed) res.end('"}'); };
+    pump();
+  });
+  const result = await connector.call('cua_alans_way_screenshot', { tabId: 'tab1' }, undefined, 25000);
+  assert.equal(result.isError, true);
+  assert.match(text(result), /too large|exceeds/i);
+});
+
 test('a connector file replaced on disk waits for other in-flight calls before exiting', { timeout: 20000 }, async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-reload-'));
   fs.mkdirSync(path.join(root, 'scripts'));
@@ -156,5 +235,12 @@ test('a client that stops reading stdout does not crash the server with a stack 
   assert.ok(exit, 'the connector exits');
   assert.doesNotMatch(connector.state.stderr, /EPIPE\n\s+at /);
   assert.equal(exit.code, 0);
+});
+
+test('a reply with no image is a tool error, not a protocol failure', { timeout: 15000 }, async (t) => {
+  const { connector } = await rig(t, (_e, json) => json(200, { viewport: { width: 1, height: 1 } }));
+  const result = await connector.call('cua_alans_way_screenshot', { tabId: 'tab1' });
+  assert.equal(result.isError, true);
+  assert.match(text(result), /no image/);
 });
 
