@@ -1033,7 +1033,7 @@ function createTab({ url = 'about:blank', filePath = '', openerId = '', botId = 
     }
   };
   view.webContents.on('did-frame-finish-load', installViewerDrop);
-  view.webContents.on('page-title-updated', (_event, title) => { tab.title = tab.localPdf && /^file:/.test(view.webContents.getURL()) ? path.basename(fileURLToPath(view.webContents.getURL())) : title; broadcast(); });
+  view.webContents.on('page-title-updated', (_event, title) => { tab.title = tab.localPdf && /^file:/.test(view.webContents.getURL()) ? path.basename(fileURLToPath(view.webContents.getURL())) : String(title).slice(0, 500); broadcast(); });
   view.webContents.on('did-start-loading', () => { tab.loading = true; tab.error = ''; broadcast(); });
   view.webContents.on('did-start-navigation', (_event, url, inPlace, isMainFrame) => {
     if (!isMainFrame || inPlace) return;

@@ -667,3 +667,9 @@ test('a favicon body is read up to its cap and no further, even when the page se
   assert.equal(await readCapped(new Response(new Uint8Array(10)), 262144).then((buffer) => buffer.length), 10);
   assert.equal(await readCapped(new Response(new Uint8Array(10), { headers: { 'content-length': '999999999' } }), 262144), null);
 });
+
+test('an inline favicon over the fetched-icon ceiling is dropped, a small one is kept', () => {
+  const small = 'data:image/png;base64,AAAA', huge = `data:image/png;base64,${'A'.repeat(400000)}`;
+  assert.equal(faviconQueue('https://a.example/', [huge, small]).inline, small);
+  assert.equal(faviconQueue('https://a.example/', [huge]).inline, '');
+});

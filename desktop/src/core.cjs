@@ -71,14 +71,6 @@ function faviconTarget(pageUrlValue, iconUrl) {
   } catch { return ''; }
 }
 
-// A page names every candidate icon; the fetch queue keeps the same-origin
-// http(s) ones in the page's own order so a cross-origin or dead first
-// candidate does not sink the tab's icon. Sites that name only a CDN icon
-// (GitHub) fall back to the origin's /favicon.ico, which is what a browser
-// tries too. An inline data:image icon Chromium already decoded rides along
-// as the last fallback; every other scheme (file:, crx:, javascript:) never
-// reaches the renderer. The queue is capped: fetches run serially, so a page
-// naming dozens of icons cannot stall the icon or hang the resolver.
 // A page picks the favicon address, so its body is read only up to `max` bytes: arrayBuffer() would hold an endless reply in memory until the timeout.
 async function readCapped(response, max) {
   if (Number(response.headers.get('content-length')) > max) { response.body?.cancel().catch(() => {}); return null; }
@@ -94,6 +86,14 @@ async function readCapped(response, max) {
     chunks.push(value);
   }
 }
+// A page names every candidate icon; the fetch queue keeps the same-origin
+// http(s) ones in the page's own order so a cross-origin or dead first
+// candidate does not sink the tab's icon. Sites that name only a CDN icon
+// (GitHub) fall back to the origin's /favicon.ico, which is what a browser
+// tries too. An inline data:image icon Chromium already decoded rides along
+// as the last fallback; every other scheme (file:, crx:, javascript:) never
+// reaches the renderer. The queue is capped: fetches run serially, so a page
+// naming dozens of icons cannot stall the icon or hang the resolver.
 function faviconQueue(pageUrlValue, favicons) {
   const targets = [];
   for (const item of favicons) {
@@ -104,7 +104,8 @@ function faviconQueue(pageUrlValue, favicons) {
   }
   const root = faviconTarget(pageUrlValue, '/favicon.ico');
   if (root && targets.length < 6 && !targets.includes(root)) targets.push(root);
-  const inline = favicons.find((item) => /^data:image\//i.test(String(item))) || '';
+  // Same ceiling as a fetched icon (base64 of 256 KB): a page's data: icon rides in every state push.
+  const inline = favicons.find((item) => /^data:image\//i.test(String(item)) && String(item).length <= 350000) || '';
   return { targets, inline };
 }
 
