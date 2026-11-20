@@ -1,7 +1,7 @@
 // All input stays inside this tab's Chromium target. Never focus a native view,
 // activate a window, use the clipboard for typing, or move the system pointer.
 const { followUpArmExpression, followUpCloseExpression, FOLLOW_UP_KEY, REFS_KEY, PICK, refsSource, CHALLENGE_HIT_SOURCE, challengeExpression, challengeHitExpression } = require('./browser-page.cjs');
-const { looksLikeCommit, isActionUrl, READ_ONLY_CDP } = require('./commit-patterns.cjs');
+const { looksLikeCommit, isActionUrl, isReadOnlyScript, READ_ONLY_CDP } = require('./commit-patterns.cjs');
 const { cdpMethodError } = require('./core.cjs');
 const crypto = require('node:crypto');
 const INPUT_ACTIONS = new Set(['move', 'click', 'double_click', 'right_click', 'drag', 'type', 'press', 'scroll', 'select']);
@@ -684,6 +684,8 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
     if (!script && !reload && typeof url !== 'string') return;
     const what = body.action === 'eval' ? 'a page script' : `the DevTools call ${method.slice(0, 60)}`;
     const source = body.action === 'eval' ? String(body.code || '') : /^(?:Runtime|DOM)\./.test(method) ? JSON.stringify(body.params || {}) : '';
+    // A script that provably only reads has nothing to commit, on any page.
+    if (body.action === 'eval' && isReadOnlyScript(source)) return;
     const later = source && (DEFERRED.exec(source) || /javascript:/i.exec(source));
     if (later) throw commitRequired(`${what} that uses ${later[0].slice(0, 40)} can act after this check (a timer, observer or event handler) or submit on its own (a request or form submit). Use the wait or read action instead`);
     const page = await pageNames(tab);

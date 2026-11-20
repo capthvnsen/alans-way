@@ -64,10 +64,10 @@ app.whenReady().then(async () => {
   await screenshot('candidate-all');
   const mac = process.platform === 'darwin';
   const cases = [
-    ['⇥', ['agent-hide', 'dialog-tab']], ['↩', ['agent-open']], ['Home', ['agent-move', 'tab-move']],
-    ['End', ['agent-move', 'tab-move']], ['Enter', ['agent-open']], ['Return', ['agent-open']],
-    ['home key', ['agent-move', 'tab-move']], ['return key', ['agent-open']], ['tab key', ['agent-hide', 'dialog-tab']],
-    ['escape key', ['search-close', 'dialog-close']], ['spacebar key', ['agent-open']], ['forward delete key', ['tab-close']],
+    ['⇥', ['agent-hide', 'dialog-tab']], ['↩', ['agent-open', 'native-send']], ['Home', ['agent-move', 'tab-move', 'move-canvas-tabs']],
+    ['End', ['agent-move', 'tab-move', 'move-canvas-tabs']], ['Enter', ['agent-open', 'native-send']], ['Return', ['agent-open', 'native-send']],
+    ['home key', ['agent-move', 'tab-move', 'move-canvas-tabs']], ['return key', ['agent-open', 'native-send']], ['tab key', ['agent-hide', 'dialog-tab']],
+    ['escape key', ['native-menu-close', 'search-close', 'dialog-close']], ['spacebar key', ['agent-open']], ['forward delete key', ['tab-close']],
     ['down arrow key', ['agent-move', 'search-result']], ['⇥ key', ['agent-hide', 'dialog-tab']],
     ['return to opener', ['dialog-close']], ['home stays available', ['close-tab']],
     ['delete tab', ['tab-close']], ['tab delete', ['tab-close']], ['delete tabs', ['tab-close']],
@@ -75,7 +75,7 @@ app.whenReady().then(async () => {
     ['forward delete tab', ['tab-close']], ['Delete+Tab', []], ['Tab+Delete', []], ['Delete Tab key', []],
     ['delete ⇥', []], ['⌦ tab', []], ['Del Tab', []], ['Shift Delete Tab', []],
     ['Home End', []], ['Tab Enter', []], ['ArrowUp ArrowDown key', []], ['⇥ Open', []], ['↩ opener', []],
-    ['⌘T key', mac ? ['new-tab'] : []], ['⌥T key', []], ['Shift+Return key', []],
+    ['⌘T key', mac ? ['new-tab'] : []], ['⌥T key', []], ['Shift+Return key', ['native-newline']],
     ['⌃T', mac ? [] : ['new-tab']], ['^T', mac ? [] : ['new-tab']], ['Control+T', mac ? [] : ['new-tab']],
     ['⌥T', []], ['Alt+T', []], ['Option T', []], ['⌘⌥T', []], ['⌃⌥T', []], ['⌘⌃T', []], ['⌘⇧T', []],
     ['⌃,', mac ? [] : ['settings']], ['⌥', []], ['⌃', []], ['!!', []], ['🌐T', []], ['⌘T⌫', []],
@@ -86,7 +86,7 @@ app.whenReady().then(async () => {
     ['reload tab', ['reload']], ['tab reload', ['reload']], ['close browser tab', ['close-tab', 'tab-close']],
     ['browser tab close', ['close-tab', 'tab-close']], ['tab new', ['new-tab']], ['pdf open', ['open-file']],
     ['ArrowDown', ['agent-move', 'search-result']], ['down arrow', ['agent-move', 'search-result']],
-    ['↓', ['agent-move', 'search-result']], ['⎋', ['search-close', 'dialog-close']], ['⌦', ['tab-close']],
+    ['↓', ['agent-move', 'search-result']], ['⎋', ['native-menu-close', 'search-close', 'dialog-close']], ['⌦', ['tab-close']],
     ['wrongtab', []], ['reopen tab', []], ['command+q', []],
   ];
   for (const [query, expected] of cases) {
@@ -101,7 +101,7 @@ app.whenReady().then(async () => {
   }
   for (const query of ['', ' \t ']) {
     const result = await search(query); receipts.push({ name: 'empty-query', result });
-    assert.equal(result.rows.length, 19);
+    assert.equal(result.rows.length, 23);
   }
   const events = await js('queryEvents');
   assert.ok(events.some(e => e.type === 'input')); assert.ok(events.every(e => e.trusted));

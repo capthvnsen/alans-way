@@ -80,7 +80,7 @@ app.whenReady().then(async () => {
   const unavailable = () => js('[...document.querySelectorAll(".shortcut-unavailable")].map(n=>n.closest("[data-shortcut]").dataset.shortcut)');
   await js('window.round2Keys=[];document.addEventListener("keydown",e=>round2Keys.push({key:e.key,trusted:e.isTrusted}),true)');
   const queries = [
-    ['new tab', ['new-tab']], ['close tab', ['close-tab', 'tab-close']], ['focus address', ['address']], ['switch tabs', ['tab-move']],
+    ['new tab', ['new-tab']], ['close tab', ['close-tab', 'tab-close']], ['focus address', ['address']], ['switch tabs', ['tab-move', 'move-canvas-tabs']],
     ['cmd+t', ['new-tab']], ['Command+T', ['new-tab']], ['⌘T', ['new-tab']],
     ['command comma', ['settings']], ['cmd+,', ['settings']], ['⌘,', ['settings']], ['comma', ['settings']], ['settings', ['settings']],
     ['ArrowDown', ['agent-move', 'search-result']], ['down arrow', ['agent-move', 'search-result']], ['↓', ['agent-move', 'search-result']],

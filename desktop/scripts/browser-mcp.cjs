@@ -267,6 +267,8 @@ async function requestOnce(endpoint, method = 'GET', body, epoch, approvedConnec
       throw failure(desktopBusyText(data), 'http-json', response.status, { code: data.error });
     if (response.status === 403 && data?.error === 'desktop_approval_required')
       throw failure(`desktop_approval_required: ${data.name} needs the user's OK to use apps on their computer, and the prompt from Alan's Workspace there was not answered in time. Ask the user to click Allow (or Always allow) in that prompt on their computer, then retry this call. Nothing was sent.`, 'http-json', response.status, { code: data.error });
+    if (response.status === 403 && data?.error === 'desktop_approval_timeout')
+      throw failure(`desktop_approval_timeout: ${data.name} needs the user's OK to use apps on their computer, and this call ran out of time waiting for the prompt, which was then closed. Nothing was sent. Ask the user to be ready to click Allow (or Always allow), then retry this call.`, 'http-json', response.status, { code: data.error });
     if (response.status === 403 && data?.error === 'desktop_approval_denied')
       throw failure(`desktop_approval_denied: The user declined desktop input for ${data.name} on their computer. Do not retry or work around it; ask the user how to proceed. Nothing was sent.`, 'http-json', response.status, { code: data.error });
     const message = typeof data?.error === 'string' && data.error.trim() ? data.error : `Browser request failed (${response.status}).`;

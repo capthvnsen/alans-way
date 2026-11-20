@@ -18,3 +18,16 @@ for (const file of ['style.css', 'remote.css']) {
     assert.deepEqual(small, []);
   });
 }
+
+test('sidebar text is at least 12px', () => {
+  const sidebar = /\.(bot-activity|bot-preview|bot-name|bot-status|primary-badge|presence-name|presence-status|empty-bots|bot-search-empty|sort-menu)\b/;
+  const small = [];
+  for (const file of ['style.css', 'avatars.css']) {
+    const css = fs.readFileSync(path.join(__dirname, '..', 'src', file), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    for (const [, selector, body] of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      const size = body.match(/font-size:\s*([\d.]+)px/);
+      if (size && Number(size[1]) < 12 && sidebar.test(selector)) small.push(`${file} ${selector.trim()} ${size[1]}px`);
+    }
+  }
+  assert.deepEqual(small, []);
+});

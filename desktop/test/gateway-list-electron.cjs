@@ -191,6 +191,9 @@ if (!process.versions.electron) {
       assert.match(await run(`document.getElementById('chat-name').getAttribute('aria-label')`), /Unread in Telegram$/);
       assert.match(await run(`document.querySelector('${row('1002')} .bot-open').getAttribute('aria-label')`), /unread in telegram$/);
       assert.equal(await run(`document.querySelector('${row('1002')} .gateway-chips').getAttribute('aria-label')`), 'Unread in Telegram');
+      // The chips are 20 px in the row and the header pill, each ringed in the colour of what is behind it.
+      assert.equal(await run(`['${row('1002')}', '#chat-name'].map((s) => getComputedStyle(document.querySelector(s + ' .gateway-chip')).width).join()`), '20px,20px', 'chips are 20 px');
+      assert.equal(await run(`(() => { const row = document.querySelector('${row('1002')}'); return getComputedStyle(row.querySelector('.gateway-chip')).boxShadow.startsWith(getComputedStyle(row).backgroundColor); })()`), true, 'the selected row\'s ring is its own background');
       assert.deepEqual((await menu()).filter((key) => key !== 'settings' && key !== 'cron'), ['telegram!', 'hermes-desktop*', 'native']);
       await openMenu();
       assert.equal(await run(`document.querySelector('#chat-menu [data-gateway="telegram"] .sr-only').textContent`), ', unread', 'the dot has a text equivalent');
@@ -247,6 +250,12 @@ if (!process.versions.electron) {
       await streamDelay(1500);
       await type('hello world', true);
       await until(async () => (await native()).run, 'turn started');
+      // Enter while the reply streams sends nothing, keeps the draft and says why.
+      await type('typed ahead', true);
+      await until(() => run(`!document.querySelector('#native-pane .nc-hint').classList.contains('hidden')`), 'hint shown');
+      assert.equal(await run(`document.querySelector('#native-pane .nc-hint').textContent`), 'Wait for the reply to finish, or press Stop');
+      assert.equal(await draft(), 'typed ahead', 'the draft waits in the box');
+      await type('', false);
       await go('1002', 'hermes-desktop');
       assert.ok((await native()).run, 'still running in the background');
       await until(async () => !(await native()).run, 'turn finished in the background', 30000);
@@ -318,6 +327,7 @@ if (!process.versions.electron) {
       await go('1001', 'native');
 
       // An approval request while away: waiting badge, its label, one notification.
+      await streamDelay(800);
       await type('APPROVE please', true);
       await until(async () => (await native()).run, 'approval turn started');
       await go('1002', 'hermes-desktop');
@@ -354,6 +364,14 @@ if (!process.versions.electron) {
       await choose('telegram'); await choose('hermes-desktop'); await showing('hermes-desktop', '1002');
       await go('1001', 'native');
       assert.deepEqual(saved().chatSurfaces, { 1001: 'native', 1002: 'hermes-desktop' });
+      // Removing the Hermes Desktop address while a bot is on it moves that bot to a gateway it still has, with its check on.
+      await go('1002', 'hermes-desktop');
+      await run(`workspace.command('settings', { hermesWebappUrl: '' })`);
+      await until(async () => (await state()).chatTarget !== 'webapp', 'the bot leaves the removed Hermes Desktop');
+      await until(async () => (await menu()).filter((key) => key.includes('*')).length === 1, 'one gateway is checked');
+      assert.equal((await menu()).some((key) => key.startsWith('hermes-desktop')), false, 'Hermes Desktop is no longer offered');
+      await run(`workspace.command('settings', { hermesWebappUrl: ${JSON.stringify(process.env.WEBAPP_URL)} })`);
+      await until(() => saved().hermesWebappUrl === process.env.WEBAPP_URL, 'the address is back for the next launch');
     } else {
       // No Telegram bots: one built-in bot with one row, a menu of Hermes and Alan's Way (no Telegram), and no sections.
       await until(async () => (await bots()) === 'hermes*', 'built-in row');

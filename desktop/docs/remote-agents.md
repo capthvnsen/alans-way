@@ -87,6 +87,7 @@ Use Alan's Workspace: cua_alans_way_* for websites; workspace_computer_* for nat
 | Symptom | Cause and fix |
 | --- | --- |
 | `desktop_approval_required` | Nobody answered the prompt on your computer within 40 s. Click **Allow** there and have the agent retry. |
+| `desktop_approval_timeout` | The agent's own call ran out of time before the prompt was answered, so the prompt was closed. Nothing was sent; have the agent retry and click **Allow** when it shows. |
 | `desktop_approval_denied` | You clicked Deny. The agent stops; tell it what to do instead. |
 | `desktop_busy: The Mac is being used by X` | Another agent holds the desktop. Wait the given seconds; take a fresh snapshot before acting. |
 | Host mismatch refusal on launch/action | Desktop tools moved between your computer and the VM. Call `workspace_computer_apps` and snapshot again; old pids mean nothing on the other host. |

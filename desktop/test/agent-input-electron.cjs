@@ -116,7 +116,7 @@ app.whenReady().then(async () => {
   await perform({ action: 'press', key: 'Enter' });
   await eventuallyEquals(() => value(view.webContents, 'result.textContent'), 'Confirmed: Enter submits');
   await assert.rejects(perform({ action: 'click', selector: '#buy' }), /commit_required: "Buy now"/);
-  await assert.rejects(agent.guard(tab, { action: 'eval', code: '1' }), /commit_required: a page script here could set off "Buy now"/);
+  await assert.rejects(agent.guard(tab, { action: 'eval', code: 'go()' }), /commit_required: a page script here could set off "Buy now"/);
   assert.equal(await value(view.webContents, 'result.textContent'), 'Confirmed: Enter submits', 'a refused click sends nothing');
   console.log('PASS: an icon-only commit button and a page script are refused at dispatch in Electron.');
   await value(view.webContents, `

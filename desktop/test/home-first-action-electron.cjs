@@ -43,6 +43,9 @@ app.whenReady().then(async () => {
   assert.match(agent.label + agent.title, /Research assistant/);
   assert.match(agent.text, /Open a page for\s+Research assistant/, 'The agent action names its target in visible text, not only a tooltip.');
   assert.ok(agent.visible, 'The labeled agent action is rendered on screen.');
+  // The backdrop is the bust: no small logo beside it, and the pill and shortcuts stay centred on the page.
+  assert.equal(await evaluate('document.querySelector("#home img")'), null, 'Home has no logo over the backdrop.');
+  assert.ok(await evaluate('(()=>{const h=document.getElementById("home").getBoundingClientRect();return ["home-agent"].map(id=>document.getElementById(id)).concat(document.querySelector(".quick-links")).every(e=>{const r=e.getBoundingClientRect();return Math.abs(r.left+r.width/2-(h.left+h.width/2))<1})})()'), 'The agent action and the shortcuts are centred.');
 
   const before = calls.length;
   await evaluate('document.getElementById("home-agent").click()');

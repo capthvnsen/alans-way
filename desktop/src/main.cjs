@@ -2362,7 +2362,7 @@ function registerIpc() {
         persistSettingsPreferences(next);
         if (addressChanged) { webappSignIn.forget(); webappSignInError = ''; webappSignInTried = false; checkWebapp().catch(error => logError('hermes-webapp', error)); }
         if (nativeConfig) nativeChat.configure(nativeConfig);
-        if (Object.hasOwn(value, 'chatSurface') || nativeConfig) applySurface();
+        if (Object.hasOwn(value, 'chatSurface') || nativeConfig || (addressChanged && !next.hermesWebappUrl)) applySurface();
         if (Object.hasOwn(value, 'releaseChannel')) {
           holdAppInstall(false);
           if (prefs.releaseChannel !== activeReleaseChannel) { update.available = ''; update.tag = ''; update.ready = false; appLatest = ''; }

@@ -86,7 +86,7 @@ app.whenReady().then(async () => {
     assert.equal(await active(), 'shortcut-search'); assert.ok(await js('document.querySelectorAll(".shortcut-row").length') > 10);
   });
   await check('global and region groups are distinct and unavailable commands explain context', async () => {
-    assert.deepEqual(await js('[...document.querySelectorAll(".shortcut-section h3")].map(n=>n.textContent)'), ['App shortcuts', 'Browser & Telegram', 'Agent list', 'Browser tab strip', 'Search & dialogs']);
+    assert.deepEqual(await js('[...document.querySelectorAll(".shortcut-section h3")].map(n=>n.textContent)'), ['App shortcuts', 'Browser & Telegram', 'Agent list', 'Browser tab strip', 'Chat & Canvas', 'Search & dialogs']);
     assert.match(await js('document.querySelector("[data-shortcut=close-tab]").textContent'), /No local tab open/);
     assert.match(await js('document.querySelector("[data-shortcut=agent-move]").textContent'), /focus|Focus/);
     assert.equal(await js('document.querySelector("[data-shortcut=settings] kbd").textContent'), process.platform === 'darwin' ? '⌘' : 'Ctrl');
