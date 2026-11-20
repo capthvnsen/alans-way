@@ -59,6 +59,18 @@ During pre-release research, a stock Hermes build read camelCase `readOnlyHint` 
 
 No workaround patch is shipped or applied here. Generated configuration remains untrusted. The raw verification command checks wire/tool behavior, **not** native Hermes enforcement. If the installed Hermes blocks a call or unexpectedly requests approval, stop and check official upstream compatibility; do not set full trust to conceal the issue. Confirm native tool filtering and approval behavior in an isolated, non-sensitive session before production use.
 
+## Hermes interfaces this repo depends on
+
+Nothing here patches Hermes. These are the places the code reads a Hermes-owned interface, so an upgrade can be checked against them. Each Python import is resolved when it is used and fails with a message naming the missing interface; none stops the plugin from loading.
+
+| Where | Interface | If it is missing |
+|---|---|---|
+| `mobile/voice/hermes_plugin.py` | `agent.secret_scope.get_secret`, `plugins.plugin_storage.plugin_data_dir`, `gateway.session_context.get_session_env` (optional) | `/call` answers that this Hermes lacks the named API; the session helper falls back to the documented defaults |
+| `mobile/voice/openrouter_speech.py` | `agent.tts_provider.TTSProvider`, `agent.transcription_provider.TranscriptionProvider` | the `openrouter-voice` providers are not registered and a warning is logged; calls and hooks still load |
+| the plugin `ctx` | `get_config`, `inject_message`, `register_command`, `register_hook`, `register_tts_provider`, `register_transcription_provider`, `on_unload`, `profile_name` | registration fails inside Hermes, which reports the plugin as not loaded |
+| Hermes dashboard | `/api/audio/voice-config`, `/api/audio/transcribe`, `/api/audio/speak` with `X-Hermes-Session-Token` | `/v1/capabilities` reports not ready (HTTP 503) |
+| `desktop/scripts/vm-update.sh`, `hermes-update.sh` | `hermes plugins update`, `plugins check-updates --json`, `update --check`, `update --yes --keep-stash`, `gateway status/stop [--all]/start/restart`, `config get`, `send -t telegram`, and the `Hermes Agent v<semver>` line of `--version` | the affected step is reported as failed or unverified; none is answered with `--yes` except `hermes update` itself |
+
 ## After a Hermes or companion upgrade
 
 1. Run `hermes-companion doctor` on both hosts.
