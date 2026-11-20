@@ -125,6 +125,52 @@ if (!process.versions.electron) {
       await until(() => visible('#native-pane .nc-composer'), 'native pane');
       assert.equal(await run(`(() => { const box = document.querySelector('#native-pane textarea'); return box.scrollHeight <= box.clientHeight; })()`), true, 'the empty composer shows a whole line');
 
+      // The compaction note above the composer and the quiet transcript row, on a second view fed a stub api (the mock speaks REST, which reports no context size).
+      const chipRun = await run(`(async () => {
+        const frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const calls = [], listeners = [], out = {};
+        const thread = { sessionId: 's1', rev: 1, messages: [], loading: false, hasOlder: false, notice: '', title: 'T', source: 'api_server', readOnly: false, shared: false };
+        const base = { configured: true, status: 'ready', error: '', sessions: [], activeId: 's1', thread, run: null, cards: [], link: null };
+        const api = { getState: () => new Promise(() => {}), onState: (cb) => { listeners.push(cb); return () => {}; }, command: async (name, value) => { calls.push([name, value]); return { ok: true }; } };
+        const root = document.createElement('div');
+        document.body.append(root);
+        const view = window.NativeChat.create({ api, root, md: window.markdownit({ html: false, linkify: true }) });
+        view.setVisible(true);
+        const chip = () => root.querySelector('.nc-compact-chip'), toggle = () => root.querySelector('.nc-compact-switch');
+        const push = async (state) => { view.setState({ ...base, ...state }); await frame(); };
+        await push({ compact: { usedTokens: 164000, windowTokens: 200000, idleSince: Date.now() } });
+        out.high = { hidden: chip().classList.contains('hidden'), text: chip().textContent, role: toggle().getAttribute('role'), checked: toggle().getAttribute('aria-checked'), name: !!toggle().getAttribute('aria-label') };
+        toggle().focus();
+        out.focusable = document.activeElement === toggle();
+        toggle().click();
+        out.off = { checked: toggle().getAttribute('aria-checked'), text: chip().textContent };
+        const box = root.querySelector('textarea'), type = async (text) => { box.value = text; box.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); await frame(); };
+        await type('first');
+        await push({ compact: { usedTokens: 164000, windowTokens: 200000, idleSince: Date.now() }, thread: { ...thread, rev: 2 } });
+        out.reset = chip().textContent;
+        await type('second');
+        out.sent = calls.filter(([name]) => name === 'send').map(([, value]) => value);
+        await push({ compact: { usedTokens: 60000, windowTokens: 200000, idleSince: Date.now() - 12 * 60000 } });
+        out.idle = { hidden: chip().classList.contains('hidden'), text: chip().textContent };
+        await push({ compact: { usedTokens: 60000, windowTokens: 200000, idleSince: Date.now() - 2 * 60000 } });
+        out.warm = chip().classList.contains('hidden');
+        await push({ compact: null });
+        out.none = chip().classList.contains('hidden');
+        await push({ cards: [{ id: 'c1', kind: 'compact', state: 'done', text: 'Conversation compacted', ts: Date.now() / 1000, answer: '' }] });
+        out.row = root.querySelector('.nc-compact-note')?.textContent;
+        view.dispose(); root.remove();
+        return out;
+      })()`);
+      assert.deepEqual(chipRun.high, { hidden: false, text: 'Will compact before sending · context 82% full', role: 'switch', checked: 'true', name: true });
+      assert.equal(chipRun.focusable, true, 'the switch is reachable from the keyboard');
+      assert.deepEqual(chipRun.off, { checked: 'false', text: 'Will not compact this message · context 82% full' });
+      assert.equal(chipRun.reset, 'Will compact before sending · context 82% full', 'the opt-out applied to one send only');
+      assert.deepEqual(chipRun.sent, [{ sessionId: 's1', text: 'first', compact: false }, { sessionId: 's1', text: 'second' }]);
+      assert.deepEqual(chipRun.idle, { hidden: false, text: 'Will compact before sending · chat idle 12 min' });
+      assert.equal(chipRun.warm, true, 'a warm cache below the limit shows no note');
+      assert.equal(chipRun.none, true);
+      assert.equal(chipRun.row, 'Conversation compacted');
+
       // The newest conversation opens by itself and shows its history as bubbles.
       await until(async () => (await native()).activeId, 'a conversation opened');
       await until(async () => (await rows()).length > 0, 'history bubbles');

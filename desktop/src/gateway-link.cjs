@@ -381,6 +381,9 @@ function createGatewayLink(deps = {}) {
     detach(storedId) { const a = att.get(storedId); if (a) { a.wanted = false; detachController(a); att.delete(storedId); } },
     submit: async (storedId, text, opts) => { await attach(storedId); return controllerOf(storedId).send(text, opts); },
     interrupt: (storedId) => controllerOf(storedId).stop(),
+    // Plain RPCs on the attached runtime session; the reply of session.compress arrives when the compaction is done.
+    usage: async (storedId) => { const a = await attach(storedId); return requireLive().wire.call('session.usage', { session_id: a.sessionId }, { timeoutMs: o.bindTimeoutMs }); },
+    compress: async (storedId, { timeoutMs, signal } = {}) => { const a = await attach(storedId); return requireLive().wire.call('session.compress', { session_id: a.sessionId }, { timeoutMs, signal }); },
     answer: (storedId, requestId, result) => controllerOf(storedId).answerRequest(requestId, result),
     pending: (storedId) => { try { return controllerOf(storedId).getState().pendingRequests.filter((r) => r.attributed); } catch { return []; } },
     isLive: () => state === 'live' && !!conn,

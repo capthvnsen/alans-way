@@ -14,6 +14,7 @@ const RUN_PREFIX = 'ws:';
 const GIVE_UP_MS = 120000;
 // Link states in which a send waits in native chat's queue; idle and stopped (no gateway) fall through to REST.
 const HOLD_STATES = new Set(['connecting', 'reconnecting', 'syncing', 'offline', 'suspended', 'signin', 'refused']);
+const USAGE_EVENTS = new Set(['session.usage', 'session.info', 'message.complete']);
 const str = (v, max = 4000) => typeof v === 'string' ? v.slice(0, max) : '';
 const isPlainObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
 
@@ -139,6 +140,14 @@ function createGatewayApi({ rest, link, transport = () => 'websocket' }) {
     linkState: () => { if (!usable()) return null; const s = link.getState(); return { state: s.state, since: s.since }; },
     onLinkState: (cb) => { link.on('state', cb); return () => link.removeListener('state', cb); },
     onGap: (cb) => { link.on('gap', cb); return () => link.removeListener('gap', cb); },
+    // Context usage, and compaction of the session before a send. Neither exists on the REST path.
+    usage: async (sessionId) => { if (!attached()) throw submitError(); return link.usage(sessionId); },
+    compact: async (sessionId, opts) => { if (!attached()) throw submitError(); return link.compress(sessionId, opts); },
+    onUsage: (cb) => {
+      const on = (e) => { const u = USAGE_EVENTS.has(e.type) && isPlainObject(e.payload) ? e.payload.usage : null; if (isPlainObject(u)) cb(e.storedId, u); };
+      link.on('event', on);
+      return () => link.removeListener('event', on);
+    },
     // Attach the open conversation ahead of the first send so that send is one frame.
     warm: (sessionId) => { if (attached()) link.attach(sessionId).catch(() => {}); },
   };

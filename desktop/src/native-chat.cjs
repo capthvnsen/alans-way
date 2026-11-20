@@ -8,6 +8,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { createHermesApi } = require('./hermes-api.cjs');
 const { writePrivateJson, plainLine } = require('./shell-support.cjs');
+const { shouldCompact } = require('./compact-policy.cjs');
 
 const MAX_TEXT = 100000, MAX_THREAD = 2000, MAX_SESSIONS = 50, MAX_CARDS = 20, MAX_THREADS = 20;
 const PAGE = 500, CACHE_CAP = 32 * 1024 * 1024;
@@ -18,6 +19,8 @@ const DELIVERED_NOTE = 'That message had already reached Hermes. Its reply shows
 // A message typed while Hermes cannot be reached waits in a per-conversation queue on disk and goes in order.
 const QUEUE_MAX_MS = 30 * 60 * 1000, QUEUE_MAX = 200, QUEUE_BYTES = 1048576, QUEUE_SAVE_MS = 250;
 const QUEUE_STATES = new Set(['queued', 'sending', 'failed']);
+// A compaction that has not answered by then is given up on and the message goes as it is.
+const COMPACT_DEADLINE_MS = 120000;
 const CMID = /^[\w-]{8,64}$/, WAIT_CODES = new Set(['unreachable', 'stream_dropped', 'http_409']);
 const str = (value, max) => typeof value === 'string' ? value.slice(0, max) : '';
 const capText = (text) => text.length > MAX_TEXT ? `${text.slice(0, MAX_TEXT)}\n\n…` : text;
@@ -47,7 +50,7 @@ function mergeMessages(current, incoming, keepLocal = () => true) {
 const sameMessages = (a, b) => a.length === b.length && a.every((m, i) => m.id === b[i].id && m.text === b[i].text && m.state === b[i].state);
 
 function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {}, notify = () => {}, openLink = () => {}, copyText = () => {},
-  apiFactory = createHermesApi, now = Date.now, pollMs = 1000, retryMs = 5000, visible = () => true }) {
+  apiFactory = createHermesApi, now = Date.now, pollMs = 1000, retryMs = 5000, visible = () => true, compactEnabled = () => true, compactDeadlineMs = COMPACT_DEADLINE_MS }) {
   const cacheDir = path.join(dir, 'native-chat-cache'), queueDir = path.join(dir, 'native-chat-queue');
   const loaded = loadConfig() || {};
   const config = { baseUrl: str(loaded.baseUrl, 500), profile: str(loaded.profile, 64), key: str(loaded.key, 500) };
@@ -65,11 +68,13 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
     api = configured() ? apiFactory({ baseUrl: config.baseUrl, key: config.key, profile: config.profile }) : null; status = api ? 'idle' : 'unconfigured'; error = '';
     // A gateway-backed api reports its link: show it, warm the open thread when it comes up, reload a thread after a gap.
     if (api?.onLinkState) {
-      const offs = [api.onLinkState((s) => { if (s.state === 'live') { if (activeId) api.warm?.(activeId); drainAll(); } notify(); }),
-        api.onGap?.(({ storedId }) => { if (!runs.has(storedId)) revalidate(storedId); })];
+      const offs = [api.onLinkState((s) => { if (s.state === 'live') { if (activeId) warm(activeId); drainAll(); } notify(); }),
+        api.onGap?.(({ storedId }) => { if (!runs.has(storedId)) revalidate(storedId); }), api.onUsage?.(noteUsage)];
       offApi = () => offs.forEach((off) => off?.());
     }
   };
+  // Attach the open conversation and learn its context size once; later numbers arrive on the reply events.
+  const warm = (id) => { api?.warm?.(id); Promise.resolve(api?.usage?.(id)).then((u) => noteUsage(id, u), () => {}); };
   const address = () => config.baseUrl ? `${config.baseUrl}${config.profile ? `/p/${config.profile}` : ''}` : '';
   const cacheFile = (id) => path.join(cacheDir, `${id}.json`);
   const bump = (t) => { t.rev = ++revSeq; };
@@ -157,7 +162,7 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
           .slice(0, QUEUE_MAX)
           // An attempt that was in flight when the app quit is in doubt: it goes through the history check, never straight out.
           .map((i) => ({ cmid: i.cmid, text: i.text, createdAt: i.createdAt, state: i.state === 'sending' ? 'queued' : i.state,
-            attempts: Math.max(Number.isSafeInteger(i.attempts) ? i.attempts : 0, i.state === 'sending' ? 1 : 0), attemptedAt: Number(i.attemptedAt) || 0, afterId: Number(i.afterId) || 0 }));
+            attempts: Math.max(Number.isSafeInteger(i.attempts) ? i.attempts : 0, i.state === 'sending' ? 1 : 0), attemptedAt: Number(i.attemptedAt) || 0, afterId: Number(i.afterId) || 0, ...(i.noCompact === true ? { noCompact: true } : {}) }));
         if (items.length) queues.set(id, items);
       } catch {}
     }
@@ -294,9 +299,10 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
   }
 
   function addCard(run, card) {
-    const list = cards.get(run.id) || [];
-    list.push({ id: `card-${++cardSeq}`, state: 'open', ts: now() / 1000, runId: run.runId, answer: '', ...card });
+    const list = cards.get(run.id) || [], entry = { id: `card-${++cardSeq}`, state: 'open', ts: now() / 1000, runId: run.runId, answer: '', ...card };
+    list.push(entry);
     cards.set(run.id, list.slice(-MAX_CARDS));
+    return entry;
   }
   const openCards = (run, kind) => (cards.get(run.id) || []).filter((c) => c.runId === run.runId && c.state === 'open' && (!kind || c.kind === kind));
   function setLocal(run, state) {
@@ -384,6 +390,7 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
       drain(id);
       return;
     }
+    t.doneAt = now();
     const text = run.final || run.text;
     if (text) { const reply = { id: `local-${++localSeq}`, role: 'assistant', text: capText(text), ts: now() / 1000 }; t.messages = [...t.messages, reply]; run.localIds.push(reply.id); }
     t.notice = err && err.code !== 'aborted' ? 'The connection dropped during the reply; it may be incomplete.'
@@ -405,14 +412,59 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
     const run = { id, runId: '', messageId: '', text: '', final: '', tool: '', status: 'sending', outcome: '', error: '', localIds: [item.localId], item, abort: new AbortController(), startedAt: now() / 1000 };
     runs.set(id, run);
     notify();
-    api.streamChat(id, item.text, { signal: run.abort.signal, clientMessageId: item.cmid, onEvent: (name, data) => onEvent(run, name, data) })
+    compactFirst(run).then(() => api.streamChat(id, item.text, { signal: run.abort.signal, clientMessageId: item.cmid, onEvent: (name, data) => onEvent(run, name, data) }))
       .then(() => finish(run, null), (e) => finish(run, e));
+  }
+
+  // ── compaction before a send ──────────────────────────────────────────────
+  // What the chip and the send decision both read: the context size Hermes last reported and when the last turn ended
+  // (this app's own clock, else the newest reply row's time). Unknown numbers decide nothing.
+  function compactInputs(id) {
+    if (!id || !compactEnabled() || !api?.compact || isReadOnly(id)) return null;
+    const t = thread(id);
+    if (!t.ctx) return null;
+    const lastReply = (t.messages.findLast((m) => m.role === 'assistant')?.ts || 0) * 1000;
+    return { usedTokens: t.ctx.used, windowTokens: t.ctx.max, idleSince: Math.max(t.doneAt || 0, lastReply) };
+  }
+  function compactReason(id) {
+    const c = compactInputs(id);
+    return c && shouldCompact({ usedTokens: c.usedTokens, windowTokens: c.windowTokens, idleMs: c.idleSince ? now() - c.idleSince : NaN });
+  }
+  function noteUsage(id, usage) {
+    const used = Number(usage?.context_used), max = Number(usage?.context_max);
+    if (!(used > 0 && max > 0) || !SESSION_ID.test(String(id))) return;
+    const t = thread(id);
+    if (t.ctx?.used === used && t.ctx.max === max) return;
+    t.ctx = { used, max };
+    notify();
+  }
+  // Once per message. A failure or the deadline sends the message anyway; only Stop holds it back (it stays "Not sent").
+  async function compactFirst(run) {
+    const { id, item } = run;
+    if (item.noCompact || item.compactTried || !compactReason(id)) return;
+    item.compactTried = true;
+    const row = addCard(run, { kind: 'compact', state: 'working', text: 'Compacting conversation…' });
+    const settle = (state, text) => { Object.assign(row, { state, text }); notify(); };
+    run.status = 'compacting';
+    notify();
+    try {
+      const result = await api.compact(id, { signal: run.abort.signal, timeoutMs: compactDeadlineMs });
+      if (result?.status !== 'compressed') throw new Error('not compacted');
+      const t = thread(id), after = Number(result.after_tokens);
+      if (t.ctx && after > 0) t.ctx = { used: after, max: t.ctx.max };
+      settle('done', 'Conversation compacted');
+    } catch (e) {
+      if (run.abort.signal.aborted) { settle('failed', 'Compaction stopped.'); throw Object.assign(new Error('Stopped.'), { code: 'aborted' }); }
+      settle('failed', 'Could not compact, so the message was sent as it is.');
+    } finally {
+      if (run.status === 'compacting') run.status = 'sending';
+    }
   }
 
   function setActive(id) {
     activeId = id; autoPick = false;
     unread.delete(id);
-    if (id) { thread(id); api?.warm?.(id); }
+    if (id) { thread(id); warm(id); }
     persistConfigSoon();
     notify();
   }
@@ -442,7 +494,7 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
       return { ok: true };
     },
     new() { setActive(''); return { ok: true }; },
-    async send({ sessionId, text }) {
+    async send({ sessionId, text, compact }) {
       text = typeof text === 'string' ? text : '';
       if (!text.trim()) throw new Error('Type a message first.');
       if (text.length > MAX_TEXT) throw new Error('That message is too long to send.');
@@ -459,7 +511,7 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
       }
       const t = thread(id), items = queues.get(id) || [];
       if (items.length >= QUEUE_MAX || items.reduce((n, i) => n + i.text.length, 0) + text.length > QUEUE_BYTES) throw new Error('Too many messages are waiting to send. Wait for them to go, or delete some.');
-      const item = { cmid: crypto.randomUUID(), text, createdAt: now(), state: 'queued', attempts: 0, attemptedAt: 0, afterId: 0 };
+      const item = { cmid: crypto.randomUUID(), text, createdAt: now(), state: 'queued', attempts: 0, attemptedAt: 0, afterId: 0, ...(compact === false ? { noCompact: true } : {}) };
       queues.set(id, [...items, item]);
       t.messages = [...t.messages, queuedRow(item)]; t.notice = ''; bump(t); saveQueueSoon(id);
       const s = sessions.find((row) => row.id === id);
@@ -567,6 +619,7 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
       thread: t && { sessionId: activeId, rev: t.rev, messages: t.messages, loading: t.loading, hasOlder: t.hasOlder, notice: t.notice,
         title: s?.title || '', source: sourceOf(activeId), readOnly: isReadOnly(activeId), shared: isShared(s) },
       run: run ? { status: run.status, text: run.text, tool: run.tool, messageId: run.messageId } : null,
+      compact: activeId && !run ? compactInputs(activeId) : null,
       cards: (cards.get(activeId) || []).map(({ runId, generation, requestId, ...card }) => card),
     };
   }

@@ -65,6 +65,26 @@ runs **Test**. The address defaults to `http://127.0.0.1:8642` when none is set.
   card. A fenced block tagged `html widget` runs in a sandboxed frame with no
   network access.
 
+## Compacting before a send
+
+Over the WebSocket gateway, Hermes reports how full a conversation's context is
+(`session.usage`, and the `usage` on its reply events). Before a message goes out, the
+chat asks Hermes to compact the conversation first (`session.compress`) when either:
+
+- the context is at least 75% of the model's window; or
+- the last turn ended more than 5 minutes ago (the prompt-cache lifetime) and the
+  context is at least 40,000 tokens or 25% of the window, whichever is smaller. Once
+  the cache has expired the next send pays full price for the whole context anyway,
+  so a summary now makes that turn and every later one cheaper.
+
+A note above the message box says so ("Will compact before sending · chat idle 12 min")
+with a switch to turn it off for that message only. The numbers live in
+`desktop/src/compact-policy.cjs`. **Settings › Chat surface › Compact long or idle chats
+before sending** turns the whole thing off. If the compaction fails or takes longer than
+two minutes, the message is sent as it is; Stop during a compaction cancels the send and
+leaves the message as "Not sent". Nothing compacts when the context size is unknown,
+which is also the case on the REST path and for a conversation Hermes has not run yet.
+
 ## Shared and read-only conversations
 
 Hermes lists conversations from every surface. Two kinds accept messages here:
