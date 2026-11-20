@@ -23,7 +23,7 @@ const QUEUE_MAX_MS = 30 * 60 * 1000, QUEUE_MAX = 200, QUEUE_BYTES = 1048576, QUE
 const QUEUE_SETTLE_MS = 15000;
 const QUEUE_STATES = new Set(['queued', 'sending', 'failed']);
 // A compaction that has not answered by then is given up on and the message goes as it is.
-const COMPACT_DEADLINE_MS = 120000;
+const COMPACT_DEADLINE_MS = 120000, STALE_CTX_MS = 60000;
 const CMID = /^[\w-]{8,64}$/, WAIT_CODES = new Set(['unreachable', 'stream_dropped', 'http_409']);
 const str = (value, max) => typeof value === 'string' ? value.slice(0, max) : '';
 const capText = (text) => text.length > MAX_TEXT ? `${text.slice(0, MAX_TEXT)}\n\n…` : text;
@@ -97,6 +97,9 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
     try {
       const raw = JSON.parse(fs.readFileSync(cacheFile(id), 'utf8'));
       if (Array.isArray(raw.messages)) { t.messages = raw.messages.filter(validCached).map((m) => ({ id: m.id, role: m.role, text: capText(m.text), ts: Number(m.ts) || 0 })).slice(-MAX_THREAD); t.hasOlder = raw.hasOlder === true; }
+      // Hermes reports no context size for a resumed conversation until its next reply, so the last one seen is kept.
+      const { used, max, at } = raw.ctx || {};
+      if (used > 0 && max > 0 && Number.isFinite(at)) t.ctx = { used, max, at, restored: true };
     } catch {}
     for (const item of queues.get(id) || []) t.messages.push(queuedRow(item));
     threads.set(id, t);
@@ -113,7 +116,7 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
     t.dirty = false;
     try {
       fs.mkdirSync(cacheDir, { recursive: true, mode: 0o700 });
-      writePrivateJson(cacheFile(id), JSON.stringify({ sessionId: id, hasOlder: t.hasOlder, messages: t.messages.filter((m) => typeof m.id === 'number') }));
+      writePrivateJson(cacheFile(id), JSON.stringify({ sessionId: id, hasOlder: t.hasOlder, ...(t.ctx ? { ctx: { used: t.ctx.used, max: t.ctx.max, at: t.ctx.at } } : {}), messages: t.messages.filter((m) => typeof m.id === 'number') }));
       pruneCache(id);
     } catch {}
   }
@@ -458,6 +461,8 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
     const t = thread(id);
     if (!t.ctx) return null;
     const lastReply = (t.messages.findLast((m) => m.role === 'assistant')?.ts || 0) * 1000;
+    // A number kept from an earlier launch is dropped once a reply newer than it shows up (another surface kept talking).
+    if (t.ctx.restored && lastReply > t.ctx.at + STALE_CTX_MS) return null;
     return { usedTokens: t.ctx.used, windowTokens: t.ctx.max, idleSince: Math.max(t.doneAt || 0, lastReply) };
   }
   function compactReason(id) {
@@ -468,8 +473,9 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
     const used = Number(usage?.context_used), max = Number(usage?.context_max);
     if (!(used > 0 && max > 0) || !SESSION_ID.test(String(id))) return;
     const t = thread(id);
-    if (t.ctx?.used === used && t.ctx.max === max) return;
-    t.ctx = { used, max };
+    if (t.ctx?.used === used && t.ctx.max === max && !t.ctx.restored) return;
+    t.ctx = { used, max, at: now() };
+    saveSoon(id, t);
     notify();
   }
   // Once per message. A failure or the deadline sends the message anyway; only Stop holds it back (it stays "Not sent").
@@ -485,7 +491,7 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
       const result = await api.compact(id, { signal: run.abort.signal, timeoutMs: compactDeadlineMs });
       if (result?.status !== 'compressed') throw new Error('not compacted');
       const t = thread(id), after = Number(result.after_tokens);
-      if (t.ctx && after > 0) t.ctx = { used: after, max: t.ctx.max };
+      if (t.ctx && after > 0) { t.ctx = { used: after, max: t.ctx.max, at: now() }; saveSoon(id, t); }
       settle('done', 'Conversation compacted');
     } catch (e) {
       if (run.abort.signal.aborted) { settle('failed', 'Compaction stopped.'); throw Object.assign(new Error('Stopped.'), { code: 'aborted' }); }

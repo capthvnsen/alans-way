@@ -46,8 +46,7 @@ const cleanup = [];
 afterEach(() => { for (const fn of cleanup.splice(0)) fn(); });
 
 // Hermes with one conversation (SID) whose context is `context`; native chat with the websocket transport on a controllable clock.
-async function rig({ context = { used: 160000, max: 200000 }, engine: engineCfg = {}, chat: chatCfg = {}, enabled = true } = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'native-chat-compact-'));
+async function rig({ context = { used: 160000, max: 200000 }, engine: engineCfg = {}, chat: chatCfg = {}, enabled = true, dir = fs.mkdtempSync(path.join(os.tmpdir(), 'native-chat-compact-')) } = {}) {
   const engine = createGatewayEngine({ sessions: [{ id: 'sess-1', session_key: SID, title: 'One', profile: 'default' }], context, deltaCount: 2, ...engineCfg });
   const server = { gate: null, conns: [] };
   const link = createGatewayLink({
@@ -205,4 +204,34 @@ test('while a reply is running there is no chip and no second send, so nothing c
   await assert.rejects(r.chat.command('send', { sessionId: SID, text: 'two' }), /Wait for the reply/);
   await until(() => r.idle(), 'the reply to finish');
   assert.equal(r.engine.compresses.length, 0);
+});
+
+// A resumed conversation has no context size on Hermes until its next reply: the chip comes from what the app saw last time.
+test('after a restart the chip shows the last known context size although Hermes reports none yet', async () => {
+  const first = await rig();
+  await until(() => first.chat.getState().compact, 'Hermes to report the context size');
+  first.chat.flush();
+  const second = await rig({ dir: first.dir, context: null });
+  await sleep(50);
+  assert.equal(second.engine.session('sess-1').context, null, 'Hermes reports no context for this session');
+  const c = second.chat.getState().compact;
+  assert.deepEqual([c.usedTokens, c.windowTokens], [160000, 200000]);
+});
+
+test('a kept context size is dropped when a newer reply exists, and a number from Hermes replaces it', async () => {
+  const seed = (dir) => {
+    const at = Date.now() - 10 * MIN, reply = Date.now() / 1000;
+    fs.mkdirSync(path.join(dir, 'native-chat-cache'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'native-chat-cache', `${SID}.json`), JSON.stringify({ sessionId: SID, hasOlder: false, ctx: { used: 160000, max: 200000, at },
+      messages: [{ id: 1, role: 'user', text: 'q', ts: reply - 5 }, { id: 2, role: 'assistant', text: 'a', ts: reply }] }));
+  };
+  const stale = fs.mkdtempSync(path.join(os.tmpdir(), 'native-chat-compact-'));
+  seed(stale);
+  const r = await rig({ dir: stale, context: null });
+  await sleep(50);
+  assert.equal(r.chat.getState().compact, null, 'a number older than the newest reply is not trusted');
+  const fresh = fs.mkdtempSync(path.join(os.tmpdir(), 'native-chat-compact-'));
+  seed(fresh);
+  const live = await rig({ dir: fresh, context: { used: 50000, max: 200000 } });
+  await until(() => live.chat.getState().compact?.usedTokens === 50000, 'the number from Hermes');
 });
