@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  merge_group:
   workflow_dispatch:
 
 env:
@@ -13,7 +14,34 @@ permissions:
   contents: read
 
 jobs:
+  # Pull requests that only touch ios/ cannot affect the desktop jobs (nothing
+  # under desktop/ reads ios/). Pushes to main, merge queue runs and manual runs
+  # always run everything.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      desktop: ${{ steps.filter.outputs.desktop }}
+    steps:
+      - if: github.event_name != 'pull_request'
+        run: echo "desktop=true" >> "$GITHUB_OUTPUT"
+      - if: github.event_name == 'pull_request'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - id: filter
+        if: github.event_name == 'pull_request'
+        run: |
+          # HEAD is the merge commit; its first parent is the base tip.
+          if files=$(git diff --name-only HEAD^1 HEAD); then
+            printf '%s\n' "$files" | python3 scripts/ci_changes.py >> "$GITHUB_OUTPUT"
+          else
+            echo "desktop=true" >> "$GITHUB_OUTPUT"
+          fi
+
   desktop:
+    needs: changes
+    if: needs.changes.outputs.desktop == 'true'
     # The release build runs check on macOS, so PRs must too.
     strategy:
       fail-fast: false
@@ -37,6 +65,8 @@ jobs:
         run: sudo "$(command -v node)" --test test/bot-auth.test.cjs test/cleanup-workspace-logs.test.cjs
 
   desktop-electron:
+    needs: changes
+    if: needs.changes.outputs.desktop == 'true'
     runs-on: macos-latest
     timeout-minutes: 20
     defaults:
@@ -132,6 +162,8 @@ jobs:
         timeout-minutes: 3
 
   desktop-windows:
+    needs: changes
+    if: needs.changes.outputs.desktop == 'true'
     runs-on: windows-latest
     timeout-minutes: 15
     defaults:
@@ -198,3 +230,16 @@ jobs:
         run: python -m unittest discover -s tests -v
       - name: Publication safety checks
         run: python scripts/check_publication.py
+
+  # The one check to require. It fails when any job failed or was cancelled, and
+  # accepts a skipped job only where `changes` skipped it on purpose.
+  gate:
+    if: always()
+    needs: [changes, desktop, desktop-electron, desktop-windows, package-and-test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 scripts/ci_gate.py
+        env:
+          NEEDS: ${{ toJSON(needs) }}
