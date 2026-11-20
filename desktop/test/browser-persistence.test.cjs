@@ -190,6 +190,38 @@ test('a Move from a page that never answers fails and gives the tab back instead
   assert.equal(macTab.controller, 'agent');
 });
 
+test('a crashed UI renderer is reloaded with a growing delay until a load holds', (t) => {
+  const { EventEmitter } = require('node:events');
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let reloads = 0;
+  const contents = Object.assign(new EventEmitter(), { isDestroyed: () => false, reload: () => { reloads++; } });
+  const context = vm.createContext({ createRetry: require('../src/shell-support.cjs').createRetry, isQuitting: false, setTimeout, clearTimeout });
+  vm.runInContext(section('function reloadWhenGone(', '\nfunction createWindow()'), context);
+  context.reloadWhenGone(contents);
+  contents.emit('render-process-gone', {}, { reason: 'clean-exit' });
+  t.mock.timers.tick(60000);
+  assert.equal(reloads, 0, 'a clean exit is not a crash');
+  contents.emit('render-process-gone', {}, { reason: 'crashed' });
+  t.mock.timers.tick(1999);
+  assert.equal(reloads, 0);
+  t.mock.timers.tick(1);
+  assert.equal(reloads, 1);
+  // It crashes again before the load held 30s: the next wait is longer.
+  contents.emit('did-finish-load');
+  t.mock.timers.tick(10000);
+  contents.emit('render-process-gone', {}, { reason: 'oom' });
+  t.mock.timers.tick(4999);
+  assert.equal(reloads, 1);
+  t.mock.timers.tick(1);
+  assert.equal(reloads, 2);
+  // A load that holds resets the backoff.
+  contents.emit('did-finish-load');
+  t.mock.timers.tick(30000);
+  contents.emit('render-process-gone', {}, { reason: 'killed' });
+  t.mock.timers.tick(2000);
+  assert.equal(reloads, 3);
+});
+
 test('clicking a chat link already auto-opened by that message does not create another tab', () => {
   const { EventEmitter } = require('node:events');
   const contents = new EventEmitter(); contents.session = new EventEmitter();

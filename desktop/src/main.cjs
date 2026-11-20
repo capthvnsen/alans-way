@@ -3754,6 +3754,14 @@ function restoreBrowserTabs() {
   }
   if (CANVAS_TABS.includes(prefs.canvasTabs[prefs.selectedBotId])) canvasTab = prefs.canvasTabs[prefs.selectedBotId];
 }
+// The two bridge-bearing pages are the whole UI. Nothing reloaded one after its renderer crashed, so the window stayed blank
+// until the next launch; reload it, backing off when it keeps crashing and forgetting the backoff once a load has held for 30s.
+function reloadWhenGone(contents) {
+  let stable;
+  const retry = createRetry({ run: () => { if (!isQuitting && !contents.isDestroyed()) contents.reload(); } });
+  contents.on('render-process-gone', (_event, details) => { clearTimeout(stable); if (details.reason !== 'clean-exit') retry.schedule(); });
+  contents.on('did-finish-load', () => { clearTimeout(stable); stable = setTimeout(() => retry.reset(), 30000); stable.unref(); });
+}
 function createWindow() {
   nativeTheme.themeSource = 'dark';
   const { width, height } = screen.getPrimaryDisplay().workAreaSize;
@@ -3764,6 +3772,7 @@ function createWindow() {
       : { titleBarStyle: 'hidden', titleBarOverlay: { color: '#111112', symbolColor: '#e7e7eb', height: 40 } }),
     webPreferences: { preload: path.join(ROOT, 'preload.bundle.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
   lockDown(win.webContents, INDEX_FILE);
+  reloadWhenGone(win.webContents);
   telegramView = new WebContentsView({ webPreferences: { preload: path.join(ROOT, 'telegram-preload.bundle.cjs'), partition: 'persist:telegram', navigateOnDragDrop: false, contextIsolation: true, nodeIntegration: false, sandbox: true } });
   telegramView.setBackgroundColor('#09090a');
   configureContents(telegramView.webContents, true);
@@ -3772,6 +3781,7 @@ function createWindow() {
   remoteView = new WebContentsView({ webPreferences: { preload: path.join(ROOT, 'preload.bundle.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
   remoteView.setBackgroundColor('#101011');
   lockDown(remoteView.webContents, REMOTE_FILE);
+  reloadWhenGone(remoteView.webContents);
   remoteView.webContents.on('before-input-event',(event,input)=>{
     const hostModifier = process.platform === 'darwin' ? input.meta : input.control;
     if(prefs.remoteControl && remoteStatus==='connected' && hostModifier && input.type==='keyDown' && /^[altrwf]$/i.test(input.key)){
