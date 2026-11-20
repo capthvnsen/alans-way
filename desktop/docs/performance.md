@@ -40,7 +40,7 @@ Top packages inside `Contents/Resources/app/node_modules/`:
 
 All 8 entries in `desktop/package.json` `dependencies` are genuinely used at runtime (none are test/build-only).
 
-**`asar` analysis:** External MCP clients (Hermes on Mac, Hermes on VPS over SSH, Grok Bot, `scripts/install-mac.sh`, `README.md`, `docs/products.md`) execute `/Applications/alans-way-localapp.app/Contents/Resources/app/scripts/browser-mcp.cjs` directly with **system `node`** (not Electron). Plain Node cannot read inside `app.asar`, and enabling `asar: true` removes `Contents/Resources/app/` in favor of `app.asar` + `app.asar.unpacked/`. Moreover, `asar` is an uncompressed archive, so it does not shrink compressed `.zip`/`.dmg` downloads. Therefore `asar: false` is kept intentionally to preserve the external connector path contract without duplicating `node_modules` and `src/` twice. See §3.6 for the decision record.
+**`asar` analysis:** External MCP clients (Hermes on Mac, Hermes on VPS over SSH, Grok Bot, `README.md`, `docs/products.md`) execute `/Applications/alans-way-localapp.app/Contents/Resources/app/scripts/browser-mcp.cjs` directly with **system `node`** (not Electron). Plain Node cannot read inside `app.asar`, and enabling `asar: true` removes `Contents/Resources/app/` in favor of `app.asar` + `app.asar.unpacked/`. Moreover, `asar` is an uncompressed archive, so it does not shrink compressed `.zip`/`.dmg` downloads. Therefore `asar: false` is kept intentionally to preserve the external connector path contract without duplicating `node_modules` and `src/` twice. See §3.6 for the decision record.
 
 ### 1.2 Main-process startup (`desktop/src/main.cjs`)
 
@@ -157,7 +157,7 @@ Built with `npx electron-builder --mac zip --publish never` in `desktop/` (arm64
 | --- | ---: | ---: | ---: |
 | Download (`OpenAlan-mac.zip`) | 148,899,011 B (148.9 MB) | 122,860,711 B (122.9 MB) | **-26.0 MB (-17.5%)** |
 | Installed `.app`, apparent bytes | 364,758,985 B (364.8 MB) | 289,231,445 B (289.2 MB) | **-75.5 MB (-20.7%)** |
-| Installed, `du` on disk | 361 MB | 283 MB (289,520 KiB) | -78 MB |
+| Installed, `du` on disk | 361 MiB | 283 MiB (289,520 KiB) | -78 MiB |
 | Files in the bundle | 3,709 | 1,991 | -1,718 |
 | Electron locale folders | 220 `.lproj` (48 MB) | `en`, `en_GB` | -47 MB |
 | Built-in avatar PNGs | 9.70 MB (1254×1254) | 1.17 MB (384×384) | -8.5 MB |
@@ -217,7 +217,7 @@ Counts are derived from the code, not profiled.
 
 ### 3.6 asar decision: stay off
 
-- `/Applications/alans-way-localapp.app/Contents/Resources/app/scripts/browser-mcp.cjs` is the documented, hard-coded launch path (`README.md:59`, `desktop/README.md:78-104`, `docs/products.md:30`, `scripts/install-mac.sh`), run by the user's own system `node`, which cannot read inside `app.asar`.
+- `/Applications/alans-way-localapp.app/Contents/Resources/app/scripts/browser-mcp.cjs` is the documented, hard-coded launch path (`README.md:59`, `desktop/README.md:78-104`, `docs/products.md:30`), run by the user's own system `node`, which cannot read inside `app.asar`.
 - asar turns `Resources/app/` into `Resources/app.asar` (+ `app.asar.unpacked/`), so that path would break for every existing Hermes/MCP configuration. A compatibility symlink `Resources/app → app.asar.unpacked` is possible in an `afterPack` hook, but I could not show without launching the packaged app that Electron then still loads `app.asar` rather than the symlinked folder, and a code-signed, auto-updated bundle with a symlink in `Resources` is a release risk of its own.
 - Gain is small: asar is not compressed, so the zip would shrink by roughly 0.2 MB (one zip header per removed file, ~1,700 files). The real gain would be fewer small-file `stat`/`open` calls at start-up, which cannot be measured here without a window (estimate: tens of ms on a cold disk cache, mostly on slow disks).
 - To revisit: `asar: true` + `asarUnpack: ['scripts/**', 'src/**', 'node_modules/@modelcontextprotocol/**', 'node_modules/zod/**', …everything browser-mcp requires]`, the `afterPack` symlink above, and a manual launch of a signed build to confirm both the app and `node …/Resources/app/scripts/browser-mcp.cjs` still work.
