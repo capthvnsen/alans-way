@@ -283,10 +283,15 @@ class Bus:
             )
         context = self.GLib.MainContext.default()
         deadline = time.time() + CALL_MS / 1000 + 2
-        while pending[0] and time.time() < deadline:
-            context.iteration(False)
-            if pending[0]:
-                time.sleep(0.0005)
+        # Block in the main loop until a reply lands (no 2 kHz spin); the timer only guarantees the wait ends at the deadline.
+        wake = self.GLib.timeout_source_new(int(CALL_MS + 2000))
+        wake.set_callback(lambda *_: False)
+        wake.attach(context)
+        try:
+            while pending[0] and time.time() < deadline:
+                context.iteration(True)
+        finally:
+            wake.destroy()
         for index, item in enumerate(results):
             if item is None:
                 results[index] = TimeoutError('D-Bus call timed out')
