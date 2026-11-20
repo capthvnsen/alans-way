@@ -199,6 +199,14 @@ With the app open, `node test/browser-smoke.cjs` exercises the real MCP protocol
 
 App data lives in `~/Library/Application Support/Hermes Workspace/`. The product renames to Open Alan and then alans-way-localapp both preserve this existing directory; the bundle ID is now `app.alans-way.localapp`. That directory holds private sessions, bot order/hiding preferences, the desktop URL, and a startup-rotated connector token. It is outside the source tree. The app restores up to twelve tab URLs after restart; live page execution state is not restored.
 
+## Seeing the UI without a screen
+
+`npm run ui:shot -- --out <dir> [--state home|chat|compact|settings|newtab]` starts the app hidden (no window, focus or Dock icon),
+with a throwaway profile, fake bots and a mock Hermes, and writes one 1440x900 PNG per state. `npm run test:hidden -- test:<name>` runs a
+window suite the same way (`HERMES_WORKSPACE_TEST_HIDDEN=1`, unpackaged builds only; suites that need real focus say so and skip).
+On macOS a watchdog kills the run if anything of it owns an on-screen window. Layout is the same on every run; PNG bytes can differ slightly.
+Tests that make temp folders are cleaned up by `test/tmp-cleanup.cjs`, and `test/with-tmp.cjs` fails a run that leaves folders behind.
+
 ## Companion integration
 
 This app lives in `desktop/` in the alans-way repository. The

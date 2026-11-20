@@ -13,6 +13,13 @@ env:
 permissions:
   contents: read
 
+concurrency:
+  # A newer push to the same pull request cancels its older run. Pushes to main
+  # and manual runs get a unique group, so they are never cancelled or replaced
+  # while pending.
+  group: tests-${{ github.event_name == 'pull_request' && github.head_ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   # Pull requests that only touch ios/ cannot affect the desktop jobs (nothing
   # under desktop/ reads ios/). Pushes to main, merge queue runs and manual runs
@@ -47,6 +54,8 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    # About twice the measured p95 run (Linux 170 s, macOS 434 s); the default is 6 hours.
+    timeout-minutes: ${{ matrix.os == 'macos-latest' && 15 || 6 }}
     defaults:
       run:
         working-directory: desktop
@@ -209,6 +218,8 @@ jobs:
         os: [ubuntu-latest, macos-latest]
         python: ['3.11', '3.12']
     runs-on: ${{ matrix.os }}
+    # About twice the measured p95 run (Linux 40 s, macOS 68 s); the default is 6 hours.
+    timeout-minutes: ${{ matrix.os == 'macos-latest' && 5 || 3 }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
