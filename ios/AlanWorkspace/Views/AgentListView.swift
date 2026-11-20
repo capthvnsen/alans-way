@@ -152,6 +152,7 @@ private struct AgentRow: View {
 struct WorkspaceSettingsView: View {
     @Environment(WorkspaceSettings.self) private var settings
     @Environment(TelegramStore.self) private var telegram
+    @Environment(GatewayStore.self) private var gateway
     @Environment(\.dismiss) private var dismiss
     @State private var confirmLogOut = false
     @State private var errorText: String?
@@ -165,6 +166,15 @@ struct WorkspaceSettingsView: View {
                     Label("Existing Telegram conversations", systemImage: "bubble.left.and.bubble.right")
                     Label("Calls stay in the foreground", systemImage: "waveform")
                     Label("Computer access is set per agent", systemImage: "desktopcomputer")
+                }.listRowBackground(WorkspaceTheme.surface)
+                Section {
+                    NavigationLink {
+                        GatewaySettingsView()
+                    } label: {
+                        Label(gateway.isConfigured ? "Alan’s Way · \(gateway.address)" : "Connect Alan’s Way", systemImage: "bubble.left.and.text.bubble.right")
+                    }.accessibilityIdentifier("alansWaySettings")
+                } header: { Text("Alan’s Way") } footer: {
+                    Text("Chat with your Hermes agent directly over your Tailscale network, beside Telegram.")
                 }.listRowBackground(WorkspaceTheme.surface)
                 Section {
                     Picker("Preferred channel", selection: Binding(get: { settings.releaseChannel }, set: { settings.releaseChannel = $0 })) {

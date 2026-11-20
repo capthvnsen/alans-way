@@ -3,13 +3,19 @@ import SwiftUI
 struct WorkspaceRootView: View {
     @Environment(TelegramStore.self) private var telegram
     @Environment(WorkspaceSettings.self) private var settings
+    @Environment(GatewayStore.self) private var gateway
     @State private var welcomeDismissed = false
+    @State private var telegramSetup = false
+    @State private var showGatewaySetup = false
 
     var body: some View {
         VStack(spacing: 0) {
             Group {
                 if telegram.authState == .ready {
-                    if settings.hasCompletedOnboarding { AgentListView() } else { OnboardingBotSetupView() }
+                    if settings.hasCompletedOnboarding { WorkspaceTabsView() } else { OnboardingBotSetupView() }
+                } else if gateway.isConfigured && !telegramSetup {
+                    // Telegram is not set up: Alan's Way is the whole app until it is.
+                    GatewayHomeView(onSetUpTelegram: { telegramSetup = true })
                 } else if !settings.hasCompletedOnboarding && !welcomeDismissed {
                     OnboardingWelcomeView { welcomeDismissed = true }
                 } else {
@@ -25,6 +31,41 @@ struct WorkspaceRootView: View {
             }
         }
         .background(WorkspaceTheme.background)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if telegram.authState != .ready && (!gateway.isConfigured || telegramSetup) {
+                Button(telegramSetup ? "Back to Alan’s Way" : "Use Alan’s Way instead") {
+                    if telegramSetup { telegramSetup = false } else { showGatewaySetup = true }
+                }
+                .font(.footnote).foregroundStyle(WorkspaceTheme.secondary).frame(minHeight: 44).frame(maxWidth: .infinity)
+                .background(WorkspaceTheme.background).accessibilityIdentifier("useAlansWay")
+            }
+        }
+        .sheet(isPresented: $showGatewaySetup) { NavigationStack { GatewaySettingsView(showsDone: true) } }
+        .onChange(of: gateway.isConfigured) { _, configured in if configured { showGatewaySetup = false } }
+    }
+}
+
+/// Telegram is the first tab and Alan's Way the second, the second only once a gateway is signed in.
+struct WorkspaceTabsView: View {
+    @Environment(GatewayStore.self) private var gateway
+    @State private var tab = Tab.telegram
+    private enum Tab { case telegram, alansWay }
+
+    var body: some View {
+        if gateway.isConfigured {
+            TabView(selection: $tab) {
+                AgentListView()
+                    .tabItem { Label("Telegram", systemImage: "paperplane") }.tag(Tab.telegram)
+                    .accessibilityIdentifier("telegramTab")
+                GatewayHomeView()
+                    .tabItem { Label("Alan’s Way", systemImage: "bubble.left.and.text.bubble.right") }.tag(Tab.alansWay)
+                    .accessibilityIdentifier("alansWayTab")
+            }
+            .toolbarBackground(.visible, for: .tabBar)
+            .toolbarBackground(WorkspaceTheme.surface, for: .tabBar)
+        } else {
+            AgentListView()
+        }
     }
 }
 
