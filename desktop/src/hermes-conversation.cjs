@@ -44,6 +44,7 @@
 // Runs under Node >= 20 and Electron-as-Node (plain node: builtins only).
 
 const { EventEmitter } = require('node:events');
+const { isVaultRequest } = require('./vault-fill.cjs');
 
 const DEFAULT_LIMITS = Object.freeze({
   maxTranscriptEntries: 512,     // user/assistant/note rows retained
@@ -922,6 +923,8 @@ class HermesConversation extends EventEmitter {
   _handleServerRequest(r) {
     const s = this._s;
     if (this._disposed || !isPlainObject(r)) return;
+    // A vault fill script carries the password: the link answers it on the wire, so no state here may hold it.
+    if (isVaultRequest(r.method, r.params)) return;
     const sid = r.sessionId;
     if (typeof sid === 'string' && sid !== this.identity.sessionId) {
       s.stats.foreignRequests += 1;
@@ -953,6 +956,7 @@ class HermesConversation extends EventEmitter {
   _adoptReplayedRequest(r) {
     const s = this._s;
     if (!isPlainObject(r) || idKey(r.id) === null) return;
+    if (isVaultRequest(r.method, r.params)) return;
     const key = idKey(r.id);
     if (s.pending.has(key)) {
       s.pending.get(key).replayed = true;

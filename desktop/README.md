@@ -24,6 +24,27 @@ Open **Alan’s Workspace** (listed as `alans-way-localapp`). The packaged bundl
 
 Local tabs share this app's browser profile, so cookies and login changes are shared between tabs and bots running in the app. This is separate from Chrome/Safari profiles and from the VPS browser. Your Telegram session is stored in a separate profile.
 
+## Filling a saved login from Hermes
+
+When a bot needs to sign in, Hermes can fill a login it holds in its own vault into the bot's tab. The password goes straight from Hermes into the page; the bot never receives it. Alan's Workspace asks you first, in a native dialog that names the bot, the site and the page (path and query), and it fills once per "Allow once". The dialog shows only when this app is the active app.
+
+What it refuses, so the password only goes where it cannot be read back by the bot:
+
+- **Pop-up logins.** A tab that was opened by another tab, or has opened one that is still open, is never filled.
+- **A second tab on the same site.** If the bot has another tab on that site (including one you hold), close it first.
+- **Pages the bot scripted.** If the bot ran a page script or a DevTools write in the page, or anywhere on that site since the app started, fills on that site are refused until you restart the app.
+- **Pages controlled by a service worker**, and pages in a sandboxed (opaque-origin) document.
+- **Too many requests.** After repeated declined, unanswered or withdrawn prompts the bot waits 1, then 5, then 15 minutes.
+
+While the filled page is open, the bot's reading tools are paused on **all** of its tabs: page scripts, DevTools, screenshots, new tabs, clipboard and selection keys, drag, and fancy selectors; form values and tab titles read as empty. It can still click, type and press keys to submit the login. The pause ends when the filled tab loads a new page. A single-page app that never loads a new page keeps it paused until you reload.
+
+What this does not stop, by design:
+
+- A site that shows a submitted value back (an error page, a search box) can let the bot read it as ordinary page text.
+- A login form that submits by GET puts the password in the address, which the bot can see.
+- A page's own scripts can copy the value somewhere the bot can read, and a site with an injectable page can be made to.
+- A hostile Hermes backend already has the password: it sends it to the app.
+
 ## Give Hermes the local browser tools
 
 This is the Hermes configuration example for **Alan's CU MCP**, not a requirement to install Hermes for every client. See the [generic MCP client example](../README.md#2-alans-cu-mcp) or [remote agents](docs/remote-agents.md) for Grok Bot and other clients. The `workspace-mcp` product name does not change the script path, existing tool names, or server keys in current Hermes configurations.

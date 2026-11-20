@@ -81,7 +81,7 @@ for (const file of ['../src/main.cjs', '../scripts/vps-browser-host.cjs']) {
       return payload;
     };
     const dispatch = vm.runInNewContext(`(async body => { ${branch} })`, {
-      listReadExpression, Number, tab: {}, botId: 'fixture', overseer: false,
+      listReadExpression, vaultLock: { readOptions: () => ({}) }, Number, tab: {}, botId: 'fixture', overseer: false,
       wc: { executeJavaScript: execute }, readJs: (_wc, code) => execute(code), dryRun: () => {},
       requireAgentRead: () => {}, requireActor: () => { checks++; if (revoked) throw new Error('stale_control_epoch'); },
       finish: data => data,

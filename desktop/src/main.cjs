@@ -33,6 +33,9 @@ const { createNativeChat } = require('./native-chat.cjs');
 const { keyFiles, importKey } = require('./key-import.cjs');
 const { parseBaseUrl, createHermesApi } = require('./hermes-api.cjs');
 const { createGatewayLink, createGatewayOpener } = require('./gateway-link.cjs');
+const { createVaultFill } = require('./vault-fill.cjs');
+const { createVaultPrompt } = require('./vault-prompt.cjs');
+const vaultLock = require('./vault-lock.cjs');
 const { createGatewayApiFactory } = require('./gateway-api.cjs');
 const { createVmUpdater, vmTargets, snoozeUntil, vmRetryState, vmCheckEntry, pruneVmUpdates, shouldShowUpdatePopup, hermesUpdateDetail, updateLocked, LOCAL_TARGET } = require('./vm-update.cjs');
 const { latestPluginTag, latestHostRelease, stableHostTarget, versionRecord, describeVersions, runSteps, summarizeRun, reportText, reportDeliveryText, deliverPendingUpdateReport, restartWarning, pluginStepResult, runLogText } = require('./update-all.cjs');
@@ -142,6 +145,7 @@ const CANVAS_PAGES = { artifacts: '#/artifacts', cron: '#/cron', settings: '#/se
 const CANVAS_TABS = ['browser', 'screen', 'terminal', ...Object.keys(CANVAS_PAGES)];
 let cloudError = '', cloudComputer = null, cloudPollAbort = null, modelAuthChild = null;
 const tabs = new Map();
+vaultLock.setPeers(() => tabs.values());
 const vpsTabs = new Map();
 const recentLinkTabs = new Map();
 let vpsBrowserStatus = 'unconfigured', vpsBrowserError = '', vpsRefreshBusy = false, vpsFailures = 0, vpsTimer, vpsMirrorTimer, vpsMirrorDebounce;
@@ -262,12 +266,14 @@ function describeTab(tab, forBot = false) {
   const url = wc && !wc.isDestroyed() ? wc.getURL() : '';
   const info = { id: tab.id, title: tab.title || 'New tab', url, internal: url === NEWTAB_URL || url === 'about:blank', owner: tab.owner, botId: tab.botId, favicon: tab.favicon || '', agentHue: botAccent(tab.botId).hue,
     controller: tab.controller, epoch: tab.epoch, loading: tab.loading, error: tab.error || '', ...(tab.recoveryUrl ? { recoveryUrl: tab.recoveryUrl } : {}), allowedBots: tab.allowedBots, agentCursor: tab.agentCursor || null, agentBusy: agentInput.isDispatching(tab), extensionPage: tab.extensionPage === true, localPdf: tab.localPdf === true, viewport: tab.viewport || null, host: HOST_LABEL, session: `shared-${HOST_LABEL}`, handoff: tab.handoff || null, handback: liveHandback(tab), takeover: tab.takeover || null };
+  // While a vault fill holds a bot's tabs, what a page titles itself is not shown to that bot: a script of the page's own could put a value there.
+  if (forBot && vaultLock.isLocked(tab)) { info.title = ''; info.favicon = ''; }
   return forBot ? redactTabForBot(info) : info;
 }
 function pageState(tab) {
   const wc = tab.view?.webContents;
   const url = wc && !wc.isDestroyed() ? wc.getURL() : '';
-  return { generation: tab.generation, url, title: tab.title || 'New tab', loading: !!tab.loading };
+  return { generation: tab.generation, url, title: vaultLock.isLocked(tab) ? '' : tab.title || 'New tab', loading: !!tab.loading };
 }
 // Action replies repeat on every call, so the tab record keeps only what the
 // next call needs; url, title and loading already sit at the top level.
@@ -360,8 +366,9 @@ const pushVpsMirror = createMirrorPusher({
     // A tab stuck on a dialog or a hung renderer keeps its last read instead of stalling every bot's push.
     const read = await Promise.all(agentTabs.map(async (tab) => {
       const wc = tab.view.webContents;
-      const page = await settleWithin(wc.executeJavaScript(checkpointExpression(true)), 2000, null) || mirrorPages.get(tab.id);
+      const page = await settleWithin(wc.executeJavaScript(checkpointExpression(!vaultLock.isLocked(tab))), 2000, null) || mirrorPages.get(tab.id);
       if (!page) return null;
+      if (vaultLock.isLocked(tab)) page.title = '';
       mirrorPages.set(tab.id, page);
       return { botId: tab.botId, tab: { id: tab.id, ...page, cookies: carry ? await pageCookies(page.url) : [] } };
     }));
@@ -826,9 +833,11 @@ function configureContents(contents, isTelegram = false) {
       try { openTelegramLink(url, details.disposition !== 'background-tab'); } catch {}
       return { action: 'deny' };
     }
+    // A popup keeps window.opener: while a vault fill holds this bot's tabs, an agent tab opens none.
+    if (opener?.controller === 'agent' && vaultLock.isLocked(opener)) return { action: 'deny' };
     return { action: 'allow', createWindow: (options) => {
       const parent = opener;
-      const tab = createTab({ url, extensionPage, owner: parent?.controller === 'agent' ? 'bot' : parent?.owner, botId: parent?.botId || prefs.selectedBotId || 'shared', controller: extensionPage ? 'human' : parent?.controller || 'human', options, skipLoad: details.disposition !== 'background-tab', activate: parent?.controller !== 'agent' && details.disposition !== 'background-tab' });
+      const tab = createTab({ openerId: parent?.id, url, extensionPage, owner: parent?.controller === 'agent' ? 'bot' : parent?.owner, botId: parent?.botId || prefs.selectedBotId || 'shared', controller: extensionPage ? 'human' : parent?.controller || 'human', options, skipLoad: details.disposition !== 'background-tab', activate: parent?.controller !== 'agent' && details.disposition !== 'background-tab' });
       if (parent?.controller === 'agent' && !extensionPage) parent.opened = [...(parent.opened || []), { tabId: tab.id, url }].slice(-10);
       return tab.view.webContents;
     } };
@@ -953,7 +962,7 @@ function reloadBrowserPage(tab) {
   if (tab.error && tab.recoveryUrl) return tab.view.webContents.loadURL(tab.recoveryUrl).catch(() => {});
   return tab.view.webContents.reload();
 }
-function createTab({ url = 'about:blank', filePath = '', botId = prefs.selectedBotId || 'shared', controller = 'human', owner = controller === 'agent' ? 'bot' : 'user', options, skipLoad = false, activate = true, extensionPage = false, localPdf = false } = {}) {
+function createTab({ url = 'about:blank', filePath = '', openerId = '', botId = prefs.selectedBotId || 'shared', controller = 'human', owner = controller === 'agent' ? 'bot' : 'user', options, skipLoad = false, activate = true, extensionPage = false, localPdf = false } = {}) {
   if (tabs.size >= 40) throw new Error('Close a tab before opening another.');
   if (filePath) {
     filePath = pdfFile(filePath);
@@ -969,8 +978,9 @@ function createTab({ url = 'about:blank', filePath = '', botId = prefs.selectedB
     webPreferences: { ...options?.webPreferences, preload: undefined, partition: 'persist:browser', contextIsolation: true, nodeIntegration: false, sandbox: true,
       webSecurity: true, navigateOnDragDrop: false, plugins: true, backgroundThrottling: false } });
   view.setBackgroundColor('#0b0b0c');
-  const tab = { id: crypto.randomUUID(), view, requestedUrl: skipLoad ? '' : targetUrl, owner, botId: String(botId).slice(0, 100), controller, extensionPage, localPdf, epoch: 1, title: filePath ? path.basename(filePath) : 'New tab', loading: false, allowedBots: [], refs: new Set(), generation: 0, queue: Promise.resolve() };
+  const tab = { id: crypto.randomUUID(), openerId, view, requestedUrl: skipLoad ? '' : targetUrl, owner, botId: String(botId).slice(0, 100), controller, extensionPage, localPdf, epoch: 1, title: filePath ? path.basename(filePath) : 'New tab', loading: false, allowedBots: [], refs: new Set(), generation: 0, queue: Promise.resolve() };
   if (controller === 'agent') tab.agentSince = Date.now();
+  vaultLock.watch(tab, view.webContents);
   tabs.set(tab.id, tab);
   tab.host = backgroundHost();
   tab.host.contentView.addChildView(view);
@@ -1111,7 +1121,7 @@ function syncDialogGuard(tab) {
     wc.debugger.on('message', (_event, method, params) => {
       if (method !== 'Page.javascriptDialogOpening' || tab.controller !== 'agent') return;
       const { record, params: answer } = answerDialog(params.type, params.message, tab.dialogAnswer);
-      tab.dialogs = [...(tab.dialogs || []), record].slice(-20);
+      tab.dialogs = [...(tab.dialogs || []), vaultLock.isLocked(tab) ? { ...record, message: '', ...(record.defaultPrompt !== undefined ? { defaultPrompt: '' } : {}) } : record].slice(-20);
       wc.debugger.sendCommand('Page.handleJavaScriptDialog', answer).catch(() => {});
     });
     wc.debugger.on('detach', () => { tab.pageEnabled = false; });
@@ -1130,7 +1140,7 @@ function takeDialogs(tab) {
 function takeOpened(tab) {
   const opened = tab.opened;
   tab.opened = undefined;
-  return opened ? { opened: opened.filter((item) => tabs.has(item.tabId)).map((item) => ({ ...item, url: tabs.get(item.tabId).view.webContents.getURL() || item.url, title: tabs.get(item.tabId).title || '', epoch: tabs.get(item.tabId).epoch })) } : {};
+  return opened ? { opened: opened.filter((item) => tabs.has(item.tabId)).map((item) => ({ ...item, url: tabs.get(item.tabId).view.webContents.getURL() || item.url, title: vaultLock.isLocked(tab) ? '' : tabs.get(item.tabId).title || '', epoch: tabs.get(item.tabId).epoch })) } : {};
 }
 function changeController(id, controller, source = 'human', handback = null) {
   const tab = tabs.get(id);
@@ -1263,6 +1273,8 @@ async function checkAction(tab, body, botId, depth = 0) {
   if (action === 'cdp') {
     const methodError = cdpMethodError(String(body.method || ''));
     if (methodError) bad(methodError);
+    const paramError = vaultLock.cdpParamError(body);
+    if (paramError) bad(paramError);
     if (body.method === 'Page.navigate') { if (typeof body.params?.url !== 'string' || !body.params.url) bad('Page.navigate needs a url string.'); agentPageUrl(body.params.url); }
   }
 }
@@ -2914,7 +2926,7 @@ async function snapshot(tab, opts = {}) {
     // A wedged renderer leaves executeJavaScript pending forever; bound it so
     // a snapshot can never outlive the connector's own timeout.
     const read = () => Promise.race([
-      cachedSnapshot(code => { requireAgentRead(tab); return readJs(tab.view.webContents, code, 20000); }, { parseWaitMs: SNAPSHOT_PARSE_MS, ...opts, seed: tab.refSeed }),
+      cachedSnapshot(code => { requireAgentRead(tab); return readJs(tab.view.webContents, code, 20000); }, { parseWaitMs: SNAPSHOT_PARSE_MS, ...opts, seed: tab.refSeed, ...vaultLock.readOptions(tab) }),
       new Promise((_, reject) => { timer = setTimeout(() => reject(Object.assign(new Error('Snapshot timed out after 10s. The page may be unresponsive.'), { status: 503 })), 10000); }),
     ]).finally(() => clearTimeout(timer));
     let result = await read();
@@ -2948,7 +2960,8 @@ async function handoffTab({id,destination,includeDrafts=false,note=''}) {
   const carry=await signInsTravel();
   let target,result,checkpoint,signIns=0;
   try {
-    checkpoint=sourceHost==='mac'?await source.view.webContents.executeJavaScript(checkpointExpression(includeDrafts)):await remoteRequest(id,'checkpoint',{includeDrafts,includeCookies:carry});
+    checkpoint=sourceHost==='mac'?await source.view.webContents.executeJavaScript(checkpointExpression(includeDrafts && !vaultLock.isLocked(source))):await remoteRequest(id,'checkpoint',{includeDrafts,includeCookies:carry});
+    if(sourceHost==='mac'&&vaultLock.isLocked(source))checkpoint={...checkpoint,title:'',drafts:[]};
     if(!/^https?:\/\//.test(checkpoint.url))throw new Error('Open a web page before handing it off.');
     const {cookies:remoteCookies,...page}=checkpoint;checkpoint=page;
     if(dest==='vps') {
@@ -3081,6 +3094,15 @@ async function actionEffect(tab, opts) {
 // learn what its action did.
 // dialog on an action (or a batch step) answers the confirm or prompt that
 // action raises; without it they are dismissed.
+// Where agent-supplied script is handed to the page. The vault lock is checked and the taint recorded in the same
+// synchronous step as the hand-over: an await earlier in the action would leave a gap in which a fill could take the
+// lock, or a timed-out call could run later in a document that is then called clean. The taint lasts until the call
+// itself settles, not until the caller stops waiting.
+function dispatchScript(tab, body, send) {
+  vaultLock.guardAction(tab, body);
+  const done = vaultLock.beginScript(tab, body);
+  try { return Promise.resolve(send()).finally(done); } catch (error) { done(); throw error; }
+}
 async function performAction(tab, body, botId, depth = 0, isAborted = () => false) {
   if (body.dialog === undefined) return performStep(tab, body, botId, depth, isAborted);
   const before = tab.dialogAnswer;
@@ -3088,6 +3110,8 @@ async function performAction(tab, body, botId, depth = 0, isAborted = () => fals
   try { return await performStep(tab, body, botId, depth, isAborted); } finally { tab.dialogAnswer = before; }
 }
 async function performStep(tab, body, botId, depth, isAborted) {
+  // While a vault fill holds the tab: page script and DevTools are closed to the agent (see vault-lock.cjs).
+  vaultLock.guardAction(tab, body);
   const overseer = isOverseer(botId);
   requireActor(tab, botId, body.epoch, true, overseer);
   const wc = tab.view.webContents;
@@ -3095,7 +3119,7 @@ async function performStep(tab, body, botId, depth, isAborted) {
   if (depth === 0) agentInput.approve(tab, body);
   const reply = (payload) => depth > 0 ? payload : actionReply(tab, payload);
   const finish = async (payload, opts) => depth > 0 ? { ...payload, ...(opts?.clicked ? { clicked: opts.clicked } : {}) } : actionReply(tab, { ...payload, ...(await actionEffect(tab, { ...opts, held: body.generation })) });
-  const probe = (cond) => { requireAgentRead(tab); return readJs(wc, batchFlow.conditionExpression(cond, tab.refSeed), 12000).catch(() => false); };
+  const probe = (cond) => { requireAgentRead(tab); vaultLock.guardSelectors(tab, cond); return readJs(wc, batchFlow.conditionExpression(cond, tab.refSeed), 12000).catch(() => false); };
   if (batchFlow.FLOW_ACTIONS.has(body.action)) {
     if (depth === 0 || !body[FLOW]) throw Object.assign(new Error('if and repeat run inside a batch.'), { status: 400 });
     dryRun(tab);
@@ -3138,7 +3162,7 @@ async function performStep(tab, body, botId, depth, isAborted) {
     dryRun(tab);
     requireAgentRead(tab);
     if (body.list !== undefined) {
-      const code = listReadExpression(body);
+      const code = listReadExpression(body, vaultLock.readOptions(tab));
       const data = await readJs(wc, code, 12000).catch(error => { error.status ||= 400; throw error; });
       requireActor(tab, botId, body.epoch, true, overseer);
       return finish({ ...data, dispatched: true });
@@ -3146,7 +3170,7 @@ async function performStep(tab, body, botId, depth, isAborted) {
     // A read step is the model's own baseline, so it must not plant the doc
     // marker: on a fresh document the missing marker is what lets the final
     // effect report the navigation it observed.
-    const data = await cachedSnapshot(code => { requireActor(tab, botId, body.epoch, true, overseer); return readJs(wc, code, 12000); }, { maxChars, maxElements: 0, elementMs: 5, mark: false }).catch(() => null);
+    const data = await cachedSnapshot(code => { requireActor(tab, botId, body.epoch, true, overseer); return readJs(wc, code, 12000); }, { maxChars, maxElements: 0, elementMs: 5, mark: false, ...vaultLock.readOptions(tab) }).catch(() => null);
     requireActor(tab, botId, body.epoch, true, overseer);
     if (data) { tab.lastRead = data.sameDoc === false ? null : lastReadOf(data); tab.docMarked = tab.docMarked || data.sameDoc === true; }
     return finish({ text: (data && typeof data.text === 'string' ? data.text : ''), dispatched: true });
@@ -3161,7 +3185,7 @@ async function performStep(tab, body, botId, depth, isAborted) {
     let evalTimer;
     dryRun(tab);
     let value = await Promise.race([
-      frameOf(wc).executeJavaScript(code, true),
+      dispatchScript(tab, body, () => frameOf(wc).executeJavaScript(code, true)),
       new Promise((_, reject) => { evalTimer = setTimeout(() => reject(Object.assign(new Error('eval timed out after 15s.'), { status: 408 })), 15000); }),
     ]).finally(() => clearTimeout(evalTimer));
     // A takeover while the eval ran seals the result: the human's page state
@@ -3218,6 +3242,7 @@ async function performStep(tab, body, botId, depth, isAborted) {
     let value = null;
     while (Date.now() - hostStart < timeout + 1000) {
       requireAgentRead(tab);
+      vaultLock.guardSelectors(tab, body); // a fill can start while a wait polls: its selector is judged again every slice
       // Short slices let a hung-up client stop a long wait instead of polling to its timeout.
       if (isAborted()) throw Object.assign(new Error('The request was closed before the wait finished.'), { status: 499 });
       const remaining = Math.max(400, timeout - (Date.now() - hostStart));
@@ -3235,7 +3260,7 @@ async function performStep(tab, body, botId, depth, isAborted) {
     requireActor(tab, botId, body.epoch, true, overseer);
     // A successful wait observed the page, so it becomes the read baseline:
     // the final effect must not re-report what the wait already confirmed.
-    const waited = await cachedSnapshot(code => { requireActor(tab, botId, body.epoch, true, overseer); return readJs(wc, code, 12000); }, { maxChars: 8000, maxElements: 0, elementMs: 5, mark: false }).catch(() => null);
+    const waited = await cachedSnapshot(code => { requireActor(tab, botId, body.epoch, true, overseer); return readJs(wc, code, 12000); }, { maxChars: 8000, maxElements: 0, elementMs: 5, mark: false, ...vaultLock.readOptions(tab) }).catch(() => null);
     if (waited) { tab.lastRead = waited.sameDoc === false ? null : lastReadOf(waited); tab.docMarked = tab.docMarked || waited.sameDoc === true; }
     return finish({ waited: value.waited, dispatched: true });
   }
@@ -3260,6 +3285,8 @@ async function performStep(tab, body, botId, depth, isAborted) {
     const method = String(body.method || '');
     const methodError = cdpMethodError(method);
     if (methodError) throw Object.assign(new Error(methodError), { status: 400 });
+    const paramError = vaultLock.cdpParamError(body);
+    if (paramError) throw Object.assign(new Error(paramError), { status: 400 });
     const params = { ...(body.params && typeof body.params === 'object' ? body.params : {}) };
     if (JSON.stringify(params).length > 64000) throw Object.assign(new Error('cdp params too large (max 64KB).'), { status: 400 });
     // Page.navigate bypasses will-navigate: route it through the same agent
@@ -3277,11 +3304,12 @@ async function performStep(tab, body, botId, depth, isAborted) {
     dryRun(tab);
     let cdpTimer;
     let value = await Promise.race([
-      wc.debugger.sendCommand(method, params),
+      dispatchScript(tab, body, () => wc.debugger.sendCommand(method, params)),
       new Promise((_, reject) => { cdpTimer = setTimeout(() => reject(Object.assign(new Error('cdp timed out after 20s.'), { status: 408 })), 20000); }),
     ]).finally(() => clearTimeout(cdpTimer));
     // Seal mid-flight takeovers: the result is the human's page state then.
     requireActor(tab, botId, body.epoch, true, overseer);
+    value = vaultLock.scrubCdpResult(method, value); // history titles are page-controlled text
     const cdpSerialized = typeof value === 'string' ? value : JSON.stringify(value);
     if (cdpSerialized && cdpSerialized.length > 48000) value = cdpSerialized.slice(0, 48000) + '…[truncated]';
     return finish({ value, dispatched: true });
@@ -3397,6 +3425,7 @@ function startApi() {
         const host=normalizeHost(body.host);
         if(body.host!==undefined&&!host)throw new Error(`Use host "computer" or "vm".`);
         if(host==='vm'){const forward={...body};delete forward.host;const result=await vpsBrowser.request('/v1/tabs','POST',forward,{botId,botName:nameForBot(botId)});vpsTabs.set(result.id,result);broadcast();return send(201,result);}
+        vaultLock.guardNewTab(botId);
         { const targetUrl = pageUrl(agentPageUrl(body.url));
           const created = createTab({ url: targetUrl, botId, controller: 'agent', activate: body.background === false }); created.agentSince = Date.now();
           // Answer after commit (not full load): the first snapshot or eval then
@@ -3465,6 +3494,7 @@ function startApi() {
       if (req.method === 'GET' && match[2] === 'screenshot') {
         const format = url.searchParams.get('format') ?? 'jpeg';
         if (!['jpeg', 'png', 'webp'].includes(format)) throw Object.assign(new Error('format must be jpeg, png, or webp.'), { status: 400 });
+        vaultLock.guardScreenshot(tab);
         const quality = intParam(url, 'quality', 1, 100) ?? 50;
         const maxWidth = intParam(url, 'maxWidth', 1, 10000) ?? 960;
         const rawCrop = url.searchParams.get('crop');
@@ -3472,6 +3502,7 @@ function startApi() {
           // Reads are gated again inside the queue so a takeover while this
           // capture waited comes back 409, not a last page peek.
           requireAgentRead(tab);
+          vaultLock.guardScreenshot(tab);
           const shot = await captureTab(tab, { format, quality, maxWidth, crop: rawCrop });
           requireAgentRead(tab);
           return shot;
@@ -3938,11 +3969,16 @@ else {
     await extensionStore.installStore();
     // One socket to the Hermes gateway for native chat, kept alive and resumed after a drop. It
     // shares the hub's sign-in; with no gateway configured it stays idle and chat uses REST+SSE.
+    const vaultFill = createVaultFill({ botFor: (storedId) => Object.keys(prefs.nativeSessions || {}).find((bot) => prefs.nativeSessions[bot] === storedId) || '',
+        nameFor: nameForBot, listTabs: () => tabs.values(), command: browserCommand, ask: createVaultPrompt({ dialog, getWindow: () => win }), log: (event, fields) => mainLog().write(event, JSON.stringify(fields)) });
+    // Test seam, only when the harness sets it: the vault gate and the real tab records, so a test can drive a fill without a gateway.
+    if (!app.isPackaged && process.env.HERMES_WORKSPACE_TEST_HOOKS === '1') globalThis.__workspaceTest = { vaultFill, tabs };
     gatewayLink = createGatewayLink({
       open: createGatewayOpener({ credentials: hermesHub.session.credentials, adoptTokens: hermesHub.session.adoptTokens, expireSignIn: hermesHub.session.expireSignIn }),
       isOnline: () => net.isOnline(),
       profile: () => hermesHub.session.credentials()?.profile || '',
       log: (event, fields) => mainLog().write(event, JSON.stringify(fields)),
+      vault: vaultFill,
     });
     gatewayLink.start();
     gatewayLink.on('state', () => pushNativeState());

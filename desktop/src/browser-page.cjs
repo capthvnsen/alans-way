@@ -1,4 +1,5 @@
 const crypto = require('node:crypto');
+const vaultLock = require('./vault-lock.cjs');
 
 // Drops tracking parameters and fragments; keeps only web and mail links.
 const SHORT_HREF = `(raw) => {
@@ -21,7 +22,7 @@ const REFS_KEY = 'hw.refs';
 // hold tokens or typed secrets.
 const READABLE_ATTR = /^(?:class|id|title|alt|role|datetime|aria-(?:label|current|checked|selected|pressed|expanded|disabled))$/;
 // Only selectors and typed fields enter this fixed reader; callers cannot supply code.
-function listReadExpression(body) {
+function listReadExpression(body, { blankValues = false } = {}) {
   const invalid = message => { throw Object.assign(new Error(message), { status: 400 }); };
   const list = body.list;
   const selector = value => typeof value === 'string' && value.trim() && value.length <= 1000;
@@ -44,7 +45,7 @@ function listReadExpression(body) {
     return Math.min(value, max);
   };
   const opts = { ref: body.ref, container: body.selector, selector: list.selector, fields,
-    maxItems: bound(list.maxItems, 50, 100, 1), maxFieldChars: bound(list.maxFieldChars, 300, 2000, 1), maxChars: bound(body.maxChars, 6000, 20000, 0) };
+    maxItems: bound(list.maxItems, 50, 100, 1), maxFieldChars: bound(list.maxFieldChars, 300, 2000, 1), maxChars: bound(body.maxChars, 6000, 20000, 0), blank: blankValues === true };
   return `(() => {
     const o = ${JSON.stringify(opts)};
     let root = document;
@@ -65,7 +66,15 @@ function listReadExpression(body) {
       for (const [name, field] of o.fields) {
         const el = field.selector ? rows[i].querySelector(field.selector) : rows[i];
         let value = '';
-        if (el && field.type === 'text') value = (el.innerText ?? el.textContent ?? '').replace(/\\s+/g, ' ').trim();
+        if (el && field.type === 'text') {
+          let raw = el.innerText ?? el.textContent ?? '';
+          if (o.blank) { // a vault lock is on: no text a person typed (a textarea, a contenteditable)
+            raw = '';
+            const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+            for (let n; (n = walker.nextNode());) { const q = n.parentElement; if (q && !q.isContentEditable && !q.closest('textarea')) raw += n.nodeValue + ' '; }
+          }
+          value = raw.replace(/\\s+/g, ' ').trim();
+        }
         if (el && field.type === 'href') {
           const raw = el.getAttribute('href');
           if (raw) { try { const url = new URL(raw, el.baseURI); if (['http:', 'https:', 'mailto:'].includes(url.protocol) && !url.username && !url.password) value = url.href; } catch {} }
@@ -169,7 +178,8 @@ function refsSource(seed = 0) {
     };
     // role and name as a person reads the control; base is the name without
     // its state words (on, off, open ...), so a toggled control keeps its identity.
-    S.describe = (el) => {
+    // blank: a vault lock is on, so what a person typed is never read (a contenteditable's text is its value).
+    S.describe = (el, blank) => {
       let name = '';
       const labelledby = el.getAttribute('aria-labelledby');
       if (labelledby) {
@@ -182,10 +192,10 @@ function refsSource(seed = 0) {
       if (!name) name = (el.getAttribute('aria-label') || el.placeholder || el.title || '').trim();
       if (!name && el.labels && el.labels[0]) {
         const labelText = (el.labels[0].innerText || '').trim();
-        const own = (el.innerText || '').trim();
+        const own = (blank && el.isContentEditable ? '' : el.innerText || '').trim();
         name = own && labelText.endsWith(own) ? labelText.slice(0, -own.length).trim() : labelText;
       }
-      if (!name) name = (el.innerText || '').trim();
+      if (!name && !(blank && el.isContentEditable)) name = (el.innerText || '').trim();
       // A control inside a shadow root is usually named by its host (a slotted
       // label, or a label attribute).
       for (let host = el.getRootNode().host, hops = 0; !name && host && hops < 3; host = host.getRootNode().host, hops++) {
@@ -214,7 +224,7 @@ function refsSource(seed = 0) {
       if (el.getAttribute('aria-current') === 'page') name += ' current';
       const type = el.type || '';
       return { role: el.getAttribute('role') || el.tagName.toLowerCase(), name: name.trim().slice(0, 200), base, type,
-        value: type === 'password' ? '[password]' : String(el.value || '').slice(0, 200),
+        value: blank ? '' : type === 'password' ? '[password]' : String(el.value || '').slice(0, 200),
         href: shortHref(typeof el.href === 'string' ? el.href : (el.getAttribute('href') || '')) };
     };
     // The text around a control that shares its name with others (the row,
@@ -547,14 +557,14 @@ function snapshotOptions(opts = {}) {
   const valueSel = opts.valueFor && typeof opts.valueFor.selector === 'string' ? opts.valueFor.selector : null;
   return { maxChars, maxElements, maxScan, textMs, elementMs, seed, held, parseWaitMs, frameWaitMs,
     wantEffect: opts.effect === true, wantSettle: opts.effect === true && opts.settle === true,
-    mark: opts.mark !== false, valueRef, valueSel };
+    mark: opts.mark !== false, valueRef, valueSel, blankValues: opts.blankValues === true };
 }
 function snapshotExpression(opts = {}, parameterized = false) {
   const values = snapshotOptions(opts);
   const { maxChars, maxElements, seed } = values;
   const p = (key) => parameterized ? `opts.${key}` : JSON.stringify(values[key]);
   return `(async () => {
-    const wantEffect = ${p('wantEffect')}, wantSettle = ${p('wantSettle')}, valueRef = ${p('valueRef')}, valueSel = ${p('valueSel')};
+    const wantEffect = ${p('wantEffect')}, wantSettle = ${p('wantSettle')}, valueRef = ${p('valueRef')}, valueSel = ${p('valueSel')}, blank = ${p('blankValues')};
     let focused = null, acted = null, settledMs;
     // The tracker's raw timers keep this read's own scheduling out of the
     // count: the settle lands inside the arm grace and must not track itself.
@@ -664,7 +674,7 @@ function snapshotExpression(opts = {}, parameterized = false) {
     if (R) {
       const found = R.collect(performance.now() + ${p('elementMs')}, ${p('maxScan')}, ${p('maxElements')});
       more = found.more;
-      const entries = found.list.map((el) => ({ el, d: R.describe(el) }));
+      const entries = found.list.map((el) => ({ el, d: R.describe(el, blank) }));
       R.assign(entries, ${p('seed')}, !found.more);
       const listed = new Set();
       let optionsLeft = 300;
@@ -699,6 +709,7 @@ function snapshotExpression(opts = {}, parameterized = false) {
           if (hit) {
             const kind = (el.type || '').toLowerCase();
             if (/^(checkbox|radio)$/.test(kind)) acted = el.checked ? 'checked' : 'unchecked';
+            else if (blank) acted = null;
             else if (el.isContentEditable) acted = (el.innerText || '').trim().slice(0, 1000);
             else if (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) acted = String(el.value == null ? '' : el.value).slice(0, 1000);
           }
@@ -721,7 +732,7 @@ function snapshotExpression(opts = {}, parameterized = false) {
       if (active && active !== document.body && active !== document.documentElement) {
         const ref = R ? R.refOf(active) : '';
         let name = (typeof active.getAttribute === 'function' ? (active.getAttribute('aria-label') || active.title || '') : '').trim();
-        if (!name) name = (active.innerText || '').trim();
+        if (!name && !(blank && active.isContentEditable)) name = (active.innerText || '').trim();
         focused = { ref, name: name.slice(0, 200) };
       }
     }
@@ -765,6 +776,7 @@ function snapshotExpression(opts = {}, parameterized = false) {
       while ((node = walker.nextNode()) && sigNodes < 30000) {
         const p = node.parentElement;
         if (!p || /^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/.test(p.tagName)) continue;
+        if (blank && (p.isContentEditable || p.closest('textarea'))) continue;
         // Sibling text nodes share a parent. One style check covers the run.
         if (p !== seenParent) {
           seenParent = p;
@@ -800,7 +812,7 @@ function snapshotExpression(opts = {}, parameterized = false) {
       textSig = sigNodes + ':' + (sigHash >>> 0).toString(36);
     } else textCut = ${p('maxChars')} <= 0 && !!document.body?.textContent?.trim();
     const challenge = ${challengeExpression()};
-    return {title:document.title,url:location.href,...(R ? { approvalContext: R.approvalContext() } : {}),sameDoc,challenge,loading:document.readyState === 'loading' || framesPending(document, 0),text,textSig,...(contentRoot ? {contentRefs,contentText:contentText.slice(0,${EFFECT_TEXT_CHARS})} : {}),elements:items,seq:R ? R.n : 0,gone,overlays,truncated:{text:textCut,elements:more},viewport:{width:innerWidth,height:innerHeight,deviceScaleFactor:devicePixelRatio},iframes:[...document.querySelectorAll('iframe')].map(el=>({title:(el.title||'').slice(0,80),src:shortHref(typeof el.src==='string'?el.src:'')})).filter(frame=>frame.src).slice(0,8),focused,acted,settledMs};
+    return {title:blank ? '' : document.title,url:location.href,...(R ? { approvalContext: R.approvalContext() } : {}),sameDoc,challenge,loading:document.readyState === 'loading' || framesPending(document, 0),text,textSig,...(contentRoot ? {contentRefs,contentText:contentText.slice(0,${EFFECT_TEXT_CHARS})} : {}),elements:items,seq:R ? R.n : 0,gone,overlays,truncated:{text:textCut,elements:more},viewport:{width:innerWidth,height:innerHeight,deviceScaleFactor:devicePixelRatio},iframes:[...document.querySelectorAll('iframe')].map(el=>({title:(el.title||'').slice(0,80),src:shortHref(typeof el.src==='string'?el.src:'')})).filter(frame=>frame.src).slice(0,8),focused,acted,settledMs};
   })()`;
 }
 
@@ -809,6 +821,13 @@ let snapshotReaderSource;
 async function cachedSnapshot(execute, opts = {}) {
   const options = JSON.stringify(snapshotOptions(opts));
   const key = 'Symbol.for("hw.snapshotReader")';
+  // Under a vault lock the answer must come from this source, evaluated here and now, never from a reader the page
+  // could have replaced: the cached one lives on the page's window, where any script of the page can swap it for a
+  // fake. (Not an isolated world: refs live in the page's world, and targeting by ref is how the login gets submitted.)
+  if (opts.blankValues === true) {
+    snapshotReaderSource ||= `async (opts) => ${snapshotExpression({}, true)}`;
+    return execute(`((opts) => { const read = ${snapshotReaderSource}; return read(opts); })(${options})`);
+  }
   const invoke = `(opts => { const s = window[${key}]; return s && s.doc === document ? s.read(opts) : { readerMissing: true }; })(${options})`;
   const result = await execute(invoke);
   if (!result?.readerMissing) return result;
@@ -1103,7 +1122,7 @@ async function readEffectOnce(execute, tab, { parseWaitMs, navigated, target, cl
   const generation = Math.max(previous && Number.isInteger(previous.generation) ? previous.generation : 0, Number.isInteger(tab.generation) ? tab.generation : 0) + 1;
   let timer;
   const result = await Promise.race([
-    Promise.resolve(cachedSnapshot(execute, { maxChars: 8000, maxElements: 150, parseWaitMs, seed: tab.refSeed, held: scan ? [...scan.byRef.keys()] : [], effect: true, settle, valueFor: target })),
+    Promise.resolve(cachedSnapshot(execute, { maxChars: 8000, maxElements: 150, parseWaitMs, seed: tab.refSeed, held: scan ? [...scan.byRef.keys()] : [], effect: true, settle, valueFor: target, ...vaultLock.readOptions(tab) })),
     new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('controls')), 8000 + (parseWaitMs || 0)); }),
   ]).finally(() => clearTimeout(timer));
   if (!result || !Array.isArray(result.elements)) return null;

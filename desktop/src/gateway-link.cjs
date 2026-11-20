@@ -16,12 +16,15 @@
 //   replay truncated or holed, or the session reaped: emit `gap` and let the
 //   caller reload history. Nothing is replayed for a send (no outbox here): a
 //   send while the link is not live is refused with `not_live`.
+// - Vault requests (a fill script that carries a password, a code or unlock prompt) are answered on the wire
+//   here, by the injected `vault` handler or a refusal, and never reach a controller or a listener.
 // - Logs carry state names, codes, counts and timings only. Never a URL,
 //   credential, message text or request body.
 const { EventEmitter } = require('node:events');
 const { HermesConversation } = require('./hermes-conversation.cjs');
 const { createHermesRemote, RemoteError } = require('./hermes-remote.cjs');
 const { HermesSessionWire } = require('./hermes-session-wire.cjs');
+const { isVaultRequest, NOT_YET } = require('./vault-fill.cjs');
 
 const DEFAULTS = Object.freeze({
   baseMs: 500, capMs: 15000, freeDrops: 5, dropWindowMs: 120000,
@@ -35,6 +38,8 @@ class LinkError extends Error {
 }
 
 const isPlainObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
+// The wire tells 1 from "1"; so must anything keyed by a request id.
+const idKey = (id) => `${typeof id}:${String(id)}`;
 const str = (v, max = 300) => typeof v === 'string' ? v.slice(0, max) : '';
 // Failures that retrying cannot fix: the user (or the settings) must act.
 const SIGNIN_CODES = new Set(['session_expired', 'needs_signin', 'auth_failed']);
@@ -46,6 +51,7 @@ function createGatewayLink(deps = {}) {
   const makeController = deps.createController || ((a) => new HermesConversation(a));
   const isOnline = deps.isOnline || (() => true);
   const log = deps.log || (() => {});
+  const vault = deps.vault || null;
   const profileOf = () => str(typeof deps.profile === 'function' ? deps.profile() : deps.profile, 200);
   const timers = { setTimeout, clearTimeout, now: Date.now, random: Math.random, ...deps.timers };
   const o = { ...DEFAULTS, ...deps.options };
@@ -149,6 +155,27 @@ function createGatewayLink(deps = {}) {
     // Only the current socket's bytes count: a late frame from a dropped one must not vouch for the new one.
     c.wire.input?.on?.('data', () => { if (conn === c) lastActivity = timers.now(); });
     c.wire.on('close', (info) => { if (conn === c) dropConn(`wire_${info && info.state || 'closed'}`); });
+    serveVault(c);
+  }
+
+  // One answer per vault request. A withdrawn request or a closed wire aborts the handler, which closes its prompt.
+  function serveVault(c) {
+    const inflight = new Map(); // idKey(wire id) -> AbortController
+    const refuse = (id, message, code = -32601) => c.wire.refuseServerRequest(id, { code, message }).catch(() => {});
+    c.wire.on('serverRequest', (r) => {
+      if (conn !== c || !isVaultRequest(r.method, r.params)) return;
+      const a = r.method === 'preview.act' && typeof r.sessionId === 'string' ? [...att.values()].find((x) => x.controller && x.sessionId === r.sessionId) : null;
+      if (r.method !== 'preview.act') { refuse(r.id, `Vault codes and unlock are ${NOT_YET} in this app.`); return; }
+      if (!vault) { refuse(r.id, `Vault fill is ${NOT_YET} in this app.`); return; }
+      if (!a) { refuse(r.id, 'That conversation is not open in this app.'); return; }
+      const ctl = new AbortController(), key = idKey(r.id);
+      inflight.set(key, ctl);
+      Promise.resolve().then(() => vault.handle({ storedId: a.storedId, sessionId: a.sessionId, params: r.params, signal: ctl.signal }))
+        .then((result) => c.wire.answerServerRequest(r.id, result), () => refuse(r.id, 'The vault step failed.', -32603))
+        .catch(() => {}).finally(() => inflight.delete(key));
+    });
+    c.wire.on('serverRequestWithdrawn', (w) => { inflight.get(idKey(w.id))?.abort(); });
+    c.wire.on('close', () => { for (const ctl of inflight.values()) ctl.abort(); });
   }
 
   // Tear down the socket, keep every attachment's watermark. `keepState` is for
