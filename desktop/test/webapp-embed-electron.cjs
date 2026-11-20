@@ -169,10 +169,17 @@ const listen = (handler, host) => new Promise(resolve => { const s = http.create
 
   // Links leave for the Browser pane, the Webapp stays put, child windows are refused.
   const before = opened().length;
-  await view.executeJavaScript(`void window.open('${origin}/child')`, true);
+  const popups = () => BrowserWindow.getAllWindows().filter((w) => w.webContents.session === webappPartition);
+  await view.executeJavaScript(`void window.open('${origin}/child', '_blank', 'noopener,noreferrer')`, true);
   await view.executeJavaScript(`void window.open('${elsewhere}/popup')`, true);
   await until(() => openedAt(`${elsewhere}/popup`), 'off-origin popup opens a Browser tab');
-  assert.equal(opened().length, before + 1, 'a same-origin child window opens nothing');
+  assert.equal(opened().length, before + 1, 'a same-origin child window opens no Browser tab');
+  await until(() => popups().length === 1, 'a same-origin pop-out opens a window on the Webapp partition');
+  const [popup] = popups();
+  assert.equal(await popup.webContents.executeJavaScript('typeof window.workspace + typeof window.hermes'), 'undefinedundefined', 'the pop-out has no Workspace bridge either');
+  await popup.webContents.executeJavaScript(`location.href = '${elsewhere}/from-popup'; void 0`);
+  await until(() => new URL(popup.webContents.getURL()).origin === origin && openedAt(`${elsewhere}/from-popup`), 'the pop-out cannot leave the Webapp origin');
+  popup.close();
   await view.executeJavaScript(`location.href = '${elsewhere}/link'; void 0`);
   await until(() => openedAt(`${elsewhere}/link`), 'off-origin navigation opens a Browser tab');
   await view.executeJavaScript(`location.href = '${origin}/away'; void 0`);

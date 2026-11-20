@@ -227,5 +227,9 @@ const keepBots = (map, ids) => Object.fromEntries(Object.entries(map || {}).filt
 // Markdown to one plain line for a row preview.
 const plainLine = (text) => String(text || '').replace(/```[\s\S]*?(```|$)/g, ' ').replace(/^::.*$/gm, ' ').replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
   .replace(/^\s*\|?[\s:|-]*-{3,}[\s:|-]*$/gm, ' ').replace(/[#>*_`|~]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120);
+// A window.open from the embedded Hermes Desktop that may become a window of its own: an http(s) address on the Webapp's origin.
+function sameOriginWindow(url, origin) {
+  try { const parsed = new URL(url); return /^https?:$/.test(parsed.protocol) && parsed.origin === origin; } catch { return false; }
+}
 
-module.exports = { queueWithDeadline, resolveChatSurface, usableSurfaces, surfaceForBot, inboxRow, canvasStripTabs, keepBots, plainLine, writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange, tailscaleSshHost };
+module.exports = { sameOriginWindow, queueWithDeadline, resolveChatSurface, usableSurfaces, surfaceForBot, inboxRow, canvasStripTabs, keepBots, plainLine, writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange, tailscaleSshHost };

@@ -17,7 +17,9 @@ const { HermesSessionWire } = require('../src/hermes-session-wire.cjs');
 // wholeReply: no message.delta at all, only message.start and a message.complete that carries the text (a Hermes
 // with streaming off, as the VM is).
 // context: the context window a session reports (session.usage, message.complete.usage); absent, a session reports no
-// context fields at all, like a Hermes session whose agent has not run yet. compress: session.compress takes compressMs,
+// context fields at all, like a Hermes session whose agent has not run yet: a resumed session (session.resume builds its agent off
+// the response path, tui_gateway/methods_session.py:963) answers session.usage with counters only until its first turn, because
+// agent/context_breakdown.py:132-135 context_usage_fields returns nothing while the compressor's last_prompt_tokens is 0. compress: session.compress takes compressMs,
 // leaves compressTo of the context behind, and refuses with compressFails (a message) when set.
 function createGatewayEngine(cfg = {}) {
   let epoch = cfg.epoch || 'epoch-1';
