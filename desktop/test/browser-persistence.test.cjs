@@ -354,7 +354,7 @@ test('shutdown retains session-only sign-ins in encrypted form without changing 
   }]));
   const safeStorage = { isAsyncEncryptionAvailable: async () => true, getSelectedStorageBackend: () => 'gnome_libsecret',
     encryptStringAsync: async text => { assert.ok(text.includes('fixture-session')); return Buffer.from('encrypted-fixture'); } };
-  const context = vm.createContext({ vaultLock: { isLocked: () => false }, webappView: null, canvasView: null, prefs, session: { fromPartition: name => sessions.get(name) }, safeStorage, savePreferences() {}, persistSettingsPreferences() {},
+  const context = vm.createContext({ vaultLock: { isLocked: () => false }, bootTimer: { mark() {} }, webappView: null, canvasView: null, prefs, session: { fromPartition: name => sessions.get(name) }, safeStorage, savePreferences() {}, persistSettingsPreferences() {},
     WebContentsView: class { constructor() { this.webContents = { destroy() {}, debugger: { attach() {}, sendCommand: async () => ({ cookies }) } }; } },
     createBrowserSessionStore: require('node:fs').existsSync(path.join(__dirname, '../src/browser-session.cjs')) ? require('../src/browser-session.cjs').createBrowserSessionStore : undefined,
     process: { platform: 'darwin' }, Buffer,

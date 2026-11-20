@@ -42,7 +42,7 @@ function createBrowserSessionStore({ WebContentsView, safeStorage, getPreference
   }
 
   // Each mark prints only under HERMES_WORKSPACE_PROFILE_BOOT=1, so a real launch shows which step is slow.
-  async function restore() {
+  async function restoreCookies() {
     const saved = getPreferences()?.sessionCookies;
     if (!saved) return;
     mark('restore-start');
@@ -62,6 +62,11 @@ function createBrowserSessionStore({ WebContentsView, safeStorage, getPreference
       if (cookies.length) { await command(partition, 'Network.setCookies', { cookies }, step); mark(`${step}-set`); }
     }
     mark('restore-done');
+  }
+
+  // Restore runs in the background while the app is already up; a save queued behind it would otherwise store half the sign-ins.
+  function restore() {
+    return pending = pending.catch(() => {}).then(restoreCookies);
   }
 
   return { save, restore };
