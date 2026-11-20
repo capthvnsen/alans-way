@@ -4156,7 +4156,9 @@ else {
     extensionStore = createExtensionStore({ root: app.getPath('userData'), session: browserSession, dialog, nativeImage, getWindow: () => win, getPreferences: () => prefs, savePreferences, onChanged: broadcast,
       canInstall: frame => [...tabs.values()].some(tab => tab.id === shownTabId() && tab.controller === 'human' && tab.view.webContents.mainFrame === frame && !layout.obscured) });
     // The rest of the boot tail must not hang on, or die with, the extension store.
-    try { await extensionStore.installStore(); await extensionStore.restore(); } catch (error) { logError('extensions', error); }
+    // Bounded too: a store that never answers would otherwise keep the update and Hermes Desktop checks from ever starting.
+    await Promise.race([(async () => { await extensionStore.installStore(); await extensionStore.restore(); })().catch(error => logError('extensions', error)).then(broadcast),
+      new Promise(resolve => setTimeout(resolve, 10000).unref())]);
     broadcast();
     seedMacSshHost();
     // A connector copy setup.sh left behind runs ahead of the app's own and
