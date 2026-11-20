@@ -19,7 +19,7 @@
 | S2 secrets written to logs before redaction | #246 |
 | S3 human-held VPS tab metadata leaks to bots | #249 |
 | S4 failed env read can overwrite credentials | #266 |
-| CU-7 approval wait not subtracted from the connector's budget | Mostly resolved: the connector now sends `X-Alans-Way-Remaining-Ms` for actions, and `computer-http.cjs` runs the approval and the action in that call context, so `checkCall()` stops the steps when the caller's time runs out. What remains: the approval prompt itself still waits its full 40 s and does not stop at the caller's deadline. Low priority. |
+| CU-7 approval wait not subtracted from the connector's budget | Fixed: the connector sends `X-Alans-Way-Remaining-Ms` for actions, `computer-http.cjs` runs the approval and the action in that call context, and the approval wait now ends at the caller's deadline (403 `desktop_approval_timeout`, prompt closed once nobody waits on it). |
 
 ## Test suite on main
 
