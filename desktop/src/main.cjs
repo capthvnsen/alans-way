@@ -3,6 +3,7 @@ const { createWebappSignIn, signInToWebapp, SIGN_IN_ERRORS } = require('./webapp
 const { authorizeBot, approvalIdentity, registryFile } = require('./bot-auth.cjs');
 const { app, BrowserWindow, WebContentsView, webContents, ipcMain, Menu, Tray, Notification, dialog, clipboard, shell, nativeTheme, screen, nativeImage, session, powerMonitor, net, protocol, systemPreferences, safeStorage } = require('electron');
 const { ACCELERATORS } = require('./workspace-shortcuts.cjs');
+const { windowOptions, newWindow } = require('./hidden-mode.cjs');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -619,7 +620,7 @@ function backgroundHost(width = 900, height = 700) {
     // A hidden WebContentsView in the human window can acquire native focus
     // during load and has no viewport before its first show. Keep inactive
     // tabs visible inside a separate window that can never accept native focus.
-    backgroundWindow = new BrowserWindow({ show: false, focusable: false, frame: false, skipTaskbar: true,
+    backgroundWindow = newWindow({ show: false, focusable: false, frame: false, skipTaskbar: true,
       width, height, webPreferences: { sandbox: true, backgroundThrottling: false } });
   } else {
     const [currentWidth, currentHeight] = backgroundWindow.getContentSize();
@@ -762,7 +763,7 @@ function guardWebappContents(contents, origin) {
   const toBrowser = (url) => { try { if (new URL(url).origin !== origin) openTelegramLink(url); } catch {} };
   contents.setWindowOpenHandler(({ url }) => {
     if (!sameOriginWindow(url, origin)) { toBrowser(url); return { action: 'deny' }; }
-    return { action: 'allow', overrideBrowserWindowOptions: { parent: win, width: 1100, height: 780, backgroundColor: '#09090a', webPreferences: WEBAPP_PREFERENCES } };
+    return { action: 'allow', overrideBrowserWindowOptions: windowOptions({ parent: win, width: 1100, height: 780, backgroundColor: '#09090a', webPreferences: WEBAPP_PREFERENCES }) };
   });
   contents.on('did-create-window', (child) => {
     webappWindows.add(child);
@@ -3787,7 +3788,7 @@ function reloadWhenGone(contents) {
 function createWindow() {
   nativeTheme.themeSource = 'dark';
   const { width, height } = screen.getPrimaryDisplay().workAreaSize;
-  win = new BrowserWindow({ width: Math.min(1550, width), height: Math.min(980, height),
+  win = newWindow({ width: Math.min(1550, width), height: Math.min(980, height),
     minWidth: Math.min(1120, width), minHeight: Math.min(680, height), backgroundColor: '#09090a', title: app.getName(),
     ...(process.platform === 'darwin'
       ? { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 18, y: 18 } }
@@ -3985,7 +3986,7 @@ else {
       selectTab: wc => { if (isQuitting || registeringExtensionTab) return; const tab = [...tabs.values()].find(item => item.view.webContents === wc); if (tab) { activeTabId = tab.id; canvasTab = 'browser'; prefs.remoteControl = false; applyLayout(); broadcast(); } else BrowserWindow.fromWebContents(wc)?.show(); },
       removeTab: (wc, window) => { if (isQuitting) return; const tab = [...tabs.values()].find(item => item.view.webContents === wc); if (tab) closeTab(tab.id); else if (window !== win && window !== backgroundWindow && !window?.isDestroyed()) window?.close(); },
       createWindow: async details => {
-        const popup = new BrowserWindow({ parent: win, width: details.width || 640, height: details.height || 720, webPreferences: { session: browserSession, sandbox: true, contextIsolation: true, nodeIntegration: false } });
+        const popup = newWindow({ parent: win, width: details.width || 640, height: details.height || 720, webPreferences: { session: browserSession, sandbox: true, contextIsolation: true, nodeIntegration: false } });
         extensionHost.addTab(popup.webContents, popup); configureContents(popup.webContents);
         const url = Array.isArray(details.url) ? details.url[0] : details.url || 'about:blank';
         await popup.loadURL(isExtensionUrl(url) ? url : normalizeUrl(url)); return popup;
