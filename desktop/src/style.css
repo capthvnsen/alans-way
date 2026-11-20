@@ -364,7 +364,7 @@ body.win32 .pane-actions{padding-right:140px}.chat-note.warn{height:auto;min-hei
 .nc-row.user .nc-bubble{max-width:78%;background:#2c4560;color:#f2f5f9}
 .nc-row.user.cont .nc-bubble{border-top-right-radius:7px}
 .nc-row.assistant.cont .nc-bubble{border-top-left-radius:7px}
-.nc-row.sending .nc-bubble{opacity:.6}
+.nc-row.sending .nc-bubble,.nc-row.queued .nc-bubble{opacity:.6}
 .nc-row.failed .nc-bubble{background:#4a2a2f}
 .nc-plain{white-space:pre-wrap}
 .nc-meta{margin-top:3px;padding:0 8px;font-size:11px;color:#7a7a85}
