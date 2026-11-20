@@ -364,6 +364,14 @@ if (!process.versions.electron) {
       await choose('telegram'); await choose('hermes-desktop'); await showing('hermes-desktop', '1002');
       await go('1001', 'native');
       assert.deepEqual(saved().chatSurfaces, { 1001: 'native', 1002: 'hermes-desktop' });
+      // Removing the Hermes Desktop address while a bot is on it moves that bot to a gateway it still has, with its check on.
+      await go('1002', 'hermes-desktop');
+      await run(`workspace.command('settings', { hermesWebappUrl: '' })`);
+      await until(async () => (await state()).chatTarget !== 'webapp', 'the bot leaves the removed Hermes Desktop');
+      await until(async () => (await menu()).filter((key) => key.includes('*')).length === 1, 'one gateway is checked');
+      assert.equal((await menu()).some((key) => key.startsWith('hermes-desktop')), false, 'Hermes Desktop is no longer offered');
+      await run(`workspace.command('settings', { hermesWebappUrl: ${JSON.stringify(process.env.WEBAPP_URL)} })`);
+      await until(() => saved().hermesWebappUrl === process.env.WEBAPP_URL, 'the address is back for the next launch');
     } else {
       // No Telegram bots: one built-in bot with one row, a menu of Hermes and Alan's Way (no Telegram), and no sections.
       await until(async () => (await bots()) === 'hermes*', 'built-in row');
