@@ -61,6 +61,37 @@ import XCTest
         XCTAssertEqual(store.linkState, .live)
     }
 
+    private func answers() async -> [JSONValue] {
+        guard let (data, _) = try? await URLSession.shared.data(from: URL(string: control + "/answers")!),
+              let list = JSONValue.parse(String(decoding: data, as: UTF8.self))?.array else { return [] }
+        return list
+    }
+
+    func testAnApprovalAndAQuestionAreAnsweredFromTheApp() async throws {
+        try await store.signIn(address: url, username: "alex", password: "pw")
+        try await until("live") { store.linkState == .live }
+        store.open("key-1")
+        try await until("history") { store.thread("key-1").hasLoaded }
+
+        try store.send("please ask for approval first", to: "key-1")
+        try await until("the approval card") { !store.thread("key-1").prompts.isEmpty }
+        guard case .approval(let command, _, let choices) = store.thread("key-1").prompts[0].kind else { return XCTFail("expected an approval") }
+        XCTAssertEqual(command, "echo hello"); XCTAssertEqual(choices, ["once", "session", "always", "deny"])
+        store.answer(store.thread("key-1").prompts[0].id, in: "key-1", with: "once")
+        try await until("the reply") { store.messages(for: "key-1").last?.text == "Decision: once." && !store.thread("key-1").busy }
+        let first = await answers()
+        XCTAssertEqual(first.last?["result"]?["choice"]?.string, "once")
+
+        try store.send("now clarify something", to: "key-1")
+        try await until("the question") { !store.thread("key-1").prompts.isEmpty }
+        guard case .clarify(let question, _) = store.thread("key-1").prompts[0].kind else { return XCTFail("expected a question") }
+        XCTAssertEqual(question, "Which name should I greet?")
+        store.answer(store.thread("key-1").prompts[0].id, in: "key-1", with: "Alan")
+        try await until("the reply") { store.messages(for: "key-1").last?.text == "Hello, Alan!" && !store.thread("key-1").busy }
+        let second = await answers()
+        XCTAssertEqual(second.last?["result"]?["answers"]?["q1"]?.string, "Alan")
+    }
+
     func testAHermesRestartIsRecoveredFromHistory() async throws {
         try await store.signIn(address: url, username: "alex", password: "pw")
         try await until("live") { store.linkState == .live }
