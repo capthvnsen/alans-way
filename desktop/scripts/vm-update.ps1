@@ -189,8 +189,10 @@ function Get-PluginMeta([string]$Pdir, [string]$Name) {
 function Git-Argument([string]$Value) {
     return '"' + (($Value -replace '(\\*)"', '$1$1\"') -replace '(\\+)$', '$1$1') + '"'
 }
-function Invoke-Git([string[]]$GitArgs, [bool]$OriginIdentity = $false) {
-    $secs = [Math]::Min((EnvInt 'ALANS_WAY_VM_GIT_TIMEOUT' 60), (BudgetLeft) - 1)
+function Invoke-Git([string[]]$GitArgs, [bool]$OriginIdentity = $false, [bool]$Unbudgeted = $false) {
+    $secs = EnvInt 'ALANS_WAY_VM_GIT_TIMEOUT' 60
+    # A rollback must be attempted even when the run budget is spent.
+    if (-not $Unbudgeted) { $secs = [Math]::Min($secs, (BudgetLeft) - 1) }
     if ($secs -le 0) { return @{ code = 124; out = 'git timed out: VM time budget exhausted' } }
     $out = [IO.Path]::GetTempFileName(); $err = [IO.Path]::GetTempFileName()
     $inp = [IO.Path]::GetTempFileName()
@@ -382,28 +384,32 @@ function Update-HermesPlugins {
             Write-Output 'vm-update: no time left to stop the gateway; the refused updates stay for the next run'
         }
         if ($gwStopped) {
-            foreach ($f in $script:Refused) {
-                if ((BudgetLeft) -gt 15) {
-                    Invoke-PluginUpdate $f.prof $f.name $f.before $f.repoRef $false
+            try {
+                foreach ($f in $script:Refused) {
+                    if ((BudgetLeft) -gt 15) {
+                        Invoke-PluginUpdate $f.prof $f.name $f.before $f.repoRef $false
+                    } else {
+                        $fpdir = Join-Path $f.prof.home 'plugins'
+                        $after = Get-PluginVersion (Join-Path $fpdir $f.name)
+                        Write-Output "vm-update: plugin $($f.name) ($($f.prof.name)): blocked"
+                        $script:Plugins += New-PluginEntry $f.prof.name $f.name $f.before $after 'blocked' $f.err $f.repoRef
+                    }
+                }
+            } finally {
+                # Every gateway that was running comes back up, whatever the
+                # retries found - and even when one of them threw.
+                $started = Start-StoppedGateways
+                if ($started.ok) {
+                    $script:GatewayRestarted = $true
+                    Write-Output 'vm-update: agent gateway restarted'
                 } else {
-                    $fpdir = Join-Path $f.prof.home 'plugins'
-                    $after = Get-PluginVersion (Join-Path $fpdir $f.name)
-                    Write-Output "vm-update: plugin $($f.name) ($($f.prof.name)): blocked"
-                    $script:Plugins += New-PluginEntry $f.prof.name $f.name $f.before $after 'blocked' $f.err $f.repoRef
+                    Write-Output "vm-update: could not start the gateway; on the VM run: $($started.failed -join '; ')"
                 }
             }
-            # Every gateway that was running comes back up, whatever the retries found.
-            $started = Start-StoppedGateways
-            if ($started.ok) {
-                $script:GatewayRestarted = $true
-                Write-Output 'vm-update: agent gateway restarted'
-            } else {
-                Write-Output "vm-update: could not start the gateway; on the VM run: $($started.failed -join '; ')"
-                # A default-profile restart cannot recover a failed standalone
-                # named-profile start; when only those failed, leave its exact
-                # remediation and result intact.
-                if ($started.failed -notcontains 'hermes gateway start') { return }
-            }
+            # A default-profile restart cannot recover a failed standalone
+            # named-profile start; when only those failed, leave its exact
+            # remediation and result intact.
+            if (-not $started.ok -and $started.failed -notcontains 'hermes gateway start') { return }
         } else {
             # The gateway stayed up; every refused pair reports blocked with
             # the full refusal text so the dialog can quote it.
@@ -421,6 +427,49 @@ function Update-HermesPlugins {
         if ($r.code -eq 0) { $script:GatewayRestarted = $true; Write-Output 'vm-update: agent gateway restarted' }
         else { Write-Output 'vm-update: gateway restart did not finish; on the VM run: hermes gateway restart' }
     }
+}
+
+# Restart the broker exactly the way setup.sh supervises it: the Scheduled
+# Task. Chromium is left running so open tabs and sign-ins survive.
+function Restart-Broker {
+    $script:Restarted = $false
+    try {
+        $null = Get-ScheduledTask -TaskName 'AlansWay_Browser' -ErrorAction Stop
+        Stop-ScheduledTask -TaskName 'AlansWay_Browser' -ErrorAction SilentlyContinue
+        Start-ScheduledTask -TaskName 'AlansWay_Browser' -ErrorAction Stop
+        $script:Restarted = $true
+        Write-Output 'vm-update: browser host restarted'
+    } catch {
+        Write-Output 'vm-update: could not restart the broker; run: Start-ScheduledTask -TaskName AlansWay_Browser'
+    }
+}
+
+# Twin of vm-update.sh's rollback: puts the checkout back on where it was
+# before the switch (PrevRef) and reinstalls its dependencies, optionally
+# restarting the broker on the old code. RollbackNote is the sentence
+# appended to the failure, so every outcome is named.
+$script:PrevHead = ''
+$script:PrevRef = ''
+$script:RollbackNote = ''
+function Undo-Checkout([bool]$RestartBroker = $false) {
+    $was = if ($script:Version) { "v$($script:Version)" } else { 'the previous version' }
+    if (-not $script:PrevHead) { $script:RollbackNote = " Could not roll back automatically; review git status in $Checkout."; return }
+    Write-Output "vm-update: rolling back to $was"
+    $r = Invoke-Git @('-C', $Checkout, '-c', 'advice.detachedHead=false', 'checkout', '-q', $script:PrevRef) $false $true
+    $now = Invoke-Git @('-C', $Checkout, 'rev-parse', 'HEAD') $false $true
+    if ($r.code -ne 0 -or $now.out -ne $script:PrevHead) {
+        $script:RollbackNote = " Could not roll back automatically; run: git -C $Checkout checkout $($script:PrevRef)"
+        return
+    }
+    $installed = $false
+    Push-Location "$Checkout\desktop"
+    try { npm.cmd ci --omit=dev --ignore-scripts 2>&1 | Out-Null; $installed = ($LASTEXITCODE -eq 0) } catch {} finally { Pop-Location }
+    if (-not $installed) {
+        $script:RollbackNote = " The checkout is back on $was but its dependencies could not be reinstalled; run npm ci in $Checkout\desktop."
+        return
+    }
+    if ($RestartBroker) { Restart-Broker }
+    $script:RollbackNote = " Rolled back to $was."
 }
 
 # Checkout discovery matches setup.sh: the app lives under the user's
@@ -527,6 +576,7 @@ while ($true) {
     if ((Get-Date) -gt $deadline) { Fail 'busy' }
     Start-Sleep -Seconds (EnvInt 'ALANS_WAY_VM_BUSY_POLL' 5)
 }
+$brokerWasUp = [bool]$s
 
 Push-Location $Checkout
 try {
@@ -564,6 +614,10 @@ try {
     $r = Invoke-Git @('merge-base', '--is-ancestor', 'HEAD', $want)
     if ($r.code -eq 124) { Fail $r.out }
     if ($r.code -ne 0) { Fail "checkout HEAD is not an ancestor of $Tag; refusing a rollback or divergent checkout. Review origin and local commits in $Checkout" }
+    $r = Invoke-Git @('rev-parse', 'HEAD')
+    if ($r.code -eq 0) { $script:PrevHead = $r.out }
+    $r = Invoke-Git @('symbolic-ref', '-q', '--short', 'HEAD')
+    $script:PrevRef = if ($r.code -eq 0 -and $r.out) { $r.out } else { $script:PrevHead }
     $r = Invoke-Git @('-c', 'advice.detachedHead=false', 'checkout', '-q', "refs/tags/$Tag")
     if ($r.code -ne 0) { Fail "could not check out $Tag`: $($r.out); review git status in $Checkout" }
     $r = Invoke-Git @('rev-parse', 'HEAD')
@@ -572,40 +626,45 @@ try {
     if ($head -ne $want) { Fail "checkout did not land on $Tag; refusing to run it" }
     Write-Output "vm-update: checkout pinned at $Tag"
 
-    Push-Location "$Checkout\desktop"
-    try { npm.cmd ci --omit=dev --ignore-scripts 2>&1 | Out-Null; if ($LASTEXITCODE -ne 0) { Fail 'npm ci failed' } }
-    finally { Pop-Location }
-    Write-Output 'vm-update: dependencies installed'
+    # Past the switch any failure, thrown or not, puts the old checkout back.
+    try {
+        Push-Location "$Checkout\desktop"
+        try { npm.cmd ci --omit=dev --ignore-scripts 2>&1 | Out-Null; if ($LASTEXITCODE -ne 0) { throw 'npm ci failed' } }
+        finally { Pop-Location }
+        Write-Output 'vm-update: dependencies installed'
 
-    $hook = "$Checkout\desktop\scripts\vm-post-update.ps1"
-    if (Test-Path $hook) {
-        & powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $hook $Tag 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) { Fail 'the post-update hook failed' }
+        $hook = "$Checkout\desktop\scripts\vm-post-update.ps1"
+        if (Test-Path $hook) {
+            & powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $hook $Tag 2>&1 | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'the post-update hook failed' }
+        }
+    } catch {
+        Undo-Checkout
+        Fail "$($_.Exception.Message).$($script:RollbackNote)"
     }
 }
 finally { Pop-Location }
 
-# Restart the broker exactly the way setup.sh supervises it: the Scheduled
-# Task. Chromium is left running so open tabs and sign-ins survive.
-try {
-    $null = Get-ScheduledTask -TaskName 'AlansWay_Browser' -ErrorAction Stop
-    Stop-ScheduledTask -TaskName 'AlansWay_Browser' -ErrorAction SilentlyContinue
-    Start-ScheduledTask -TaskName 'AlansWay_Browser' -ErrorAction Stop
-    $script:Restarted = $true
-    Write-Output 'vm-update: browser host restarted'
-} catch {
-    Write-Output 'vm-update: could not restart the broker; run: Start-ScheduledTask -TaskName AlansWay_Browser'
-}
+Restart-Broker
 
 $deadline = (Get-Date).AddSeconds((EnvInt 'ALANS_WAY_VM_HEALTH_WAIT' 45))
 $healthy = $false
+$asked = $false
 $wanted = $Tag -replace '^v', ''
 while ((Get-Date) -lt $deadline) {
     $s = Get-Status
+    if ($s) { $asked = $true }
     if ($s -and [string]$s.version -eq $wanted) { $healthy = $true; break }
     Start-Sleep -Seconds 2
 }
 if (-not $healthy) {
+    # A restart that landed on the wrong version, or took a running broker down,
+    # leaves the box worse than before; put the old code back and start it.
+    if ($script:Restarted -and ($asked -or $brokerWasUp)) {
+        Undo-Checkout $true
+        if ($asked) { Fail "the browser host did not come back on $Tag.$($script:RollbackNote)" }
+        Fail "the browser host stopped answering after the update.$($script:RollbackNote)"
+    }
     if ($script:Restarted) { Fail "the browser host did not come back on $Tag" }
     Fail "updated but the broker did not report v$wanted; restart it with: Start-ScheduledTask -TaskName AlansWay_Browser"
 }
