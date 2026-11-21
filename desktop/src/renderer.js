@@ -1817,7 +1817,13 @@ function mountChatSurface(body) {
     nativeKey.placeholder = state.nativeChat?.hasKey ? 'Saved. Paste a new key to replace it.' : 'API_SERVER_KEY';
     const files = state.nativeKeyFiles || [];
     for (const name of files) if (!nativeImport.querySelector(`[data-name="${name}"]`)) nativeImport.append(importButton(name));
-    for (const button of nativeImport.children) button.hidden = !files.includes(button.dataset.name);
+    // A first run with one saved key file: importing it and testing the connection is the one obvious action.
+    const firstRun = !state.nativeChat?.hasKey && files.length === 1;
+    for (const button of nativeImport.children) {
+      button.hidden = !files.includes(button.dataset.name);
+      button.className = firstRun && !button.hidden ? 'primary-button' : 'secondary-button';
+      button.textContent = firstRun && !button.hidden ? 'Import saved key and connect' : `Import saved key from ~/.config/alans-way/${button.dataset.name}-api-key`;
+    }
     nativeImport.hidden = !files.length;
     status.textContent = state.webappStatus === 'unconfigured' ? 'Not set up. Enter the address of your Hermes server above.' : webappStatusText();
     if (document.activeElement !== ttl) ttl.value = state.promptCacheTtl;
@@ -2289,7 +2295,7 @@ const WEBAPP_HOST_CHECK = 'On the Hermes host, run: hermes webapp --status. It s
 function webappStatusText() {
   const url = state.hermesWebappUrl;
   return { unconfigured: 'Hermes Desktop has no address yet. Add it in Settings under Chat surface.',
-    checking: `Checking ${url}…`, reachable: `Opening ${url}…`, unreachable: `Can't reach ${url}. ${WEBAPP_HOST_CHECK}`,
+    checking: `Checking ${url}…`, reachable: `Opening ${url}…`, unreachable: `${state.tunnelNote || `Can't reach ${url}.`} ${WEBAPP_HOST_CHECK}`,
     'needs-link': 'This Hermes has no sign-in, so it opens only with a one-use link. On the Hermes host, run hermes webapp --no-open and paste the link in the chat pane within 60 seconds. You need a new link each time Workspace restarts.',
     'sign-in': state.webappSignInError || (state.webappSignIn ? `Signing in as ${state.webappSignIn}…` : 'Sign in inside the chat pane, or save the username and password from webapp-signin.txt in Settings under Chat surface so Workspace signs in for you.'),
     ready: state.webappSignIn ? `Connected and signed in as ${state.webappSignIn}.` : 'Connected and signed in.' }[state.webappStatus] || '';

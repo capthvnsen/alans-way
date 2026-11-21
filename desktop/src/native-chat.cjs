@@ -53,7 +53,7 @@ function mergeMessages(current, incoming, keepLocal = () => true) {
 const sameMessages = (a, b) => a.length === b.length && a.every((m, i) => m.id === b[i].id && m.text === b[i].text && m.state === b[i].state);
 
 function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {}, notify = () => {}, openLink = () => {}, copyText = () => {},
-  apiFactory = createHermesApi, now = Date.now, pollMs = 1000, retryMs = 5000, visible = () => true, compactEnabled = () => true, cacheTtlMs = () => undefined, compactDeadlineMs = COMPACT_DEADLINE_MS, settleMs = QUEUE_SETTLE_MS }) {
+  apiFactory = createHermesApi, tunnelNote = () => '', now = Date.now, pollMs = 1000, retryMs = 5000, visible = () => true, compactEnabled = () => true, cacheTtlMs = () => undefined, compactDeadlineMs = COMPACT_DEADLINE_MS, settleMs = QUEUE_SETTLE_MS }) {
   const cacheDir = path.join(dir, 'native-chat-cache'), queueDir = path.join(dir, 'native-chat-queue');
   const loaded = loadConfig() || {};
   const config = { baseUrl: str(loaded.baseUrl, 500), profile: str(loaded.profile, 64), key: str(loaded.key, 500) };
@@ -647,7 +647,7 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
     const s = sessions.find((row) => row.id === activeId);
     const run = runs.get(activeId);
     return {
-      configured: configured(), status, error, address: address(), link: api?.linkState?.() || null,
+      configured: configured(), status, error, tunnel: tunnelNote(), address: address(), link: api?.linkState?.() || null,
       sessions: sessions.map((row) => {
         const live = runs.get(row.id);
         return { ...row, readOnly: isReadOnly(row.id), shared: isShared(row), running: !!live, waiting: !!live && openCards(live).length > 0, unread: unread.has(row.id) };
