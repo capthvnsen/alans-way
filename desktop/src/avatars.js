@@ -198,7 +198,7 @@
     const idle = activity?.state === 'idle' || (activity?.state === 'active' && Number.isFinite(activity.expiresAt) && activity.expiresAt <= Date.now());
     record.node.dataset.activity = active ? 'active' : idle ? 'idle' : 'unknown';
     if (!record.decorative) {
-      record.node.title = [record.bot?.name || 'Telegram', activityLabel(record.bot?.activity)].filter(Boolean).join(' · ');
+      record.node.title = [record.bot?.name || 'Telegram', active && activityLabel(record.bot?.activity)].filter(Boolean).join(' · ');
       record.node.setAttribute('aria-label', record.node.title);
     }
     // The same live-activity signal that lights the avatar ring widens the glances; an animated avatar otherwise idles.

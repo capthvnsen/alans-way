@@ -27,6 +27,16 @@ function colorFor(value) {
   const colors = ['#e6e6eb', '#00ba83', '#e9428b', '#f18b31', '#9673e1', '#22b9b7', '#689be4'];
   return colors[Array.from(value).reduce((sum, letter) => sum + letter.charCodeAt(0), 0) % colors.length];
 }
+// Only Hermes Desktop's own link can be unreachable; the reason is what the old "Unreachable" pill's tooltip said.
+const UNREACHABLE_REASON = 'Can’t reach Hermes Desktop';
+const isUnreachable = (id) => shownGateway(id) === 'hermes-desktop' && state.webappStatus === 'unreachable';
+// The working glow takes the bot's marble tint, or its row colour when it has none.
+const glowFor = (bot) => { const { tint, cutout } = window.HermesAvatars.resolveAvatar(bot, state); return cutout && tint !== 'none' ? `var(--glow-${tint})` : colorFor(bot.id); };
+function errorBadge(reason) {
+  const badge = element('span', 'error-badge'); badge.title = reason; badge.setAttribute('role', 'img'); badge.setAttribute('aria-label', `Unreachable: ${reason}`);
+  badge.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 4.2v4.4M8 11.4v.1"/></svg>';
+  return badge;
+}
 const SURFACE_OF = { telegram: 'telegram', webapp: 'hermes-desktop', native: 'native' };
 // Gateway logos, each carrying its name for assistive technology where it stands alone.
 const GATEWAY_LOGOS = {
@@ -102,7 +112,8 @@ function renderBotRow(parent, { bot, gateways }, { inbox, selectedKey, entryKey,
   const row = element('div', `bot-row${isSelected ? ' selected' : ''}${state.primaryBotId === bot.id ? ' primary' : ''}`);
   row.setAttribute('role', 'listitem'); row.draggable = (state.botSort || 'manual') === 'manual'; row.dataset.botId = bot.id; row.dataset.rowKey = bot.id;
   const open = element('button', 'bot-open'); open.type = 'button';
-  open.setAttribute('aria-label', `Open ${bot.name}${waiting ? ', waiting for you' : ''}${unread.length ? `, ${window.GatewayList.unreadLabel(unread).toLowerCase()}` : ''}`);
+  const unreachable = isUnreachable(bot.id);
+  open.dataset.label = `Open ${bot.name}${unreachable ? `, unreachable: ${UNREACHABLE_REASON}` : ''}${waiting ? ', waiting for you' : ''}${unread.length ? `, ${window.GatewayList.unreadLabel(unread).toLowerCase()}` : ''}`;
   open.setAttribute('aria-current', String(isSelected)); open.tabIndex = bot.id === entryKey ? 0 : -1;
   const avatar = element('span', 'avatar'); avatar.style.setProperty('--avatar-bg', colorFor(bot.id)); window.HermesAvatars.paint(avatar, bot, state);
   const copy = element('span', 'bot-copy');
@@ -113,14 +124,12 @@ function renderBotRow(parent, { bot, gateways }, { inbox, selectedKey, entryKey,
   const preview = window.GatewayList.previewOrder({ gateways, shown, unread }).map(previewOf).find(Boolean) || (gateways.includes('telegram') && bot.username ? `@${bot.username}` : '');
   head.append(nameLine, status); copy.append(head);
   if (preview) copy.append(element('div', 'bot-preview', preview));
-  const unreachable = shown === 'hermes-desktop' && state.webappStatus === 'unreachable';
-  if (gateways.includes('telegram')) status.append(element('span', 'bot-activity hidden'));
   const hide = element('button', `bot-hide${bot.id === 'hermes' ? ' hidden' : ''}`, '×'); hide.title = `Hide ${bot.name}`; hide.setAttribute('aria-label', hide.title);
   hide.tabIndex = bot.id === entryKey ? 0 : -1;
   hide.onclick = (event) => { event.stopPropagation(); command('hide-bot', { id: bot.id }); };
   open.append(avatar, copy);
-  if (unreachable) { const note = element('span', 'status-text bad', 'Unreachable'); note.title = 'Can’t reach Hermes Desktop'; status.append(note); }
-  if (waiting) { const badge = element('span', 'waiting-badge'); badge.title = 'Waiting for you'; status.append(badge, element('span', 'status-text waiting', 'Waiting')); }
+  if (unreachable) status.append(errorBadge(UNREACHABLE_REASON));
+  if (waiting) { const badge = element('span', 'waiting-badge'); badge.title = 'Waiting for you'; status.append(badge); }
   if (unread.length) status.append(fillChips(element('span', 'gateway-chips'), unread));
   row.append(open, hide);
   row.onclick = () => command('open-bot', gateways.includes(shown) ? { id: bot.id, surface: shown } : { id: bot.id });
@@ -139,22 +148,12 @@ function renderBotRow(parent, { bot, gateways }, { inbox, selectedKey, entryKey,
   };
   renderBotActivity(row, bot); parent.append(row);
 }
+// Idle and unknown show nothing; a live signal glows, and the row's accessible name says "working" so colour is not the only cue.
 function renderBotActivity(row, bot) {
-  const status = row.querySelector('.bot-activity'), activity = bot.activity;
-  if (!status) return;
-  const active = activity?.state === 'active' && (!activity.expiresAt || activity.expiresAt > Date.now());
-  // Unknown activity says nothing; only a real signal (live now, or known idle) shows.
-  const shown = active || activity?.state === 'idle';
-  status.replaceChildren();
-  if (active) {
-    const dots = element('span', 'hw-dots');
-    dots.append(element('i'), element('i'), element('i'));
-    if (bot.hue !== undefined) dots.style.setProperty('--h', String(bot.hue));
-    status.append(dots, document.createTextNode(activity.label || 'Telegram activity'));
-  } else if (shown) status.textContent = 'Idle';
-  status.classList.toggle('hidden', !shown);
-  status.classList.toggle('active', active);
-  status.title = activity?.detail || 'Live Telegram chat actions. No activity signal does not prove a bot has stopped working.';
+  const open = row.querySelector('.bot-open'), working = window.HermesAvatars.isActive(bot.activity);
+  row.classList.toggle('working', working); row.style.setProperty('--glow', glowFor(bot));
+  open.setAttribute('aria-label', `${open.dataset.label}${working ? ', working' : ''}`);
+  open.title = working ? bot.activity.label || '' : '';
 }
 // The chat header's menu: which of this bot's gateways to show (a check beside the one on screen), then its Hermes Desktop pages.
 function renderChatMenu() {
@@ -499,8 +498,11 @@ function render(next) {
   if (bot) {
     window.HermesAvatars.paint($('presence-avatar'), bot, state, undefined, { animate: true });
     $('presence-name').textContent = bot.name;
-    $('presence-status').textContent = window.HermesAvatars.activityLabel(bot.activity);
-    $('presence-status').classList.toggle('active', window.HermesAvatars.isActive(bot.activity));
+    const working = window.HermesAvatars.isActive(bot.activity), status = $('presence-status');
+    status.textContent = working ? window.HermesAvatars.activityLabel(bot.activity) : '';
+    if (isUnreachable(bot.id)) status.append(errorBadge(UNREACHABLE_REASON));
+    status.classList.toggle('active', working);
+    $('agent-presence').classList.toggle('working', working); $('agent-presence').style.setProperty('--glow', glowFor(bot));
   }
   renderBots(); renderTabs(); renderSettingsBots(); renderRecordings(); renderSitePermissions(); renderExtensions(); renderDownloads(); refreshSettingsSections();
   const tab = state.tabs.find((item) => item.id === state.activeTabId && item.host === state.hostLabel);
@@ -1815,7 +1817,13 @@ function mountChatSurface(body) {
     nativeKey.placeholder = state.nativeChat?.hasKey ? 'Saved. Paste a new key to replace it.' : 'API_SERVER_KEY';
     const files = state.nativeKeyFiles || [];
     for (const name of files) if (!nativeImport.querySelector(`[data-name="${name}"]`)) nativeImport.append(importButton(name));
-    for (const button of nativeImport.children) button.hidden = !files.includes(button.dataset.name);
+    // A first run with one saved key file: importing it and testing the connection is the one obvious action.
+    const firstRun = !state.nativeChat?.hasKey && files.length === 1;
+    for (const button of nativeImport.children) {
+      button.hidden = !files.includes(button.dataset.name);
+      button.className = firstRun && !button.hidden ? 'primary-button' : 'secondary-button';
+      button.textContent = firstRun && !button.hidden ? 'Import saved key and connect' : `Import saved key from ~/.config/alans-way/${button.dataset.name}-api-key`;
+    }
     nativeImport.hidden = !files.length;
     status.textContent = state.webappStatus === 'unconfigured' ? 'Not set up. Enter the address of your Hermes server above.' : webappStatusText();
     if (document.activeElement !== ttl) ttl.value = state.promptCacheTtl;
@@ -2287,7 +2295,7 @@ const WEBAPP_HOST_CHECK = 'On the Hermes host, run: hermes webapp --status. It s
 function webappStatusText() {
   const url = state.hermesWebappUrl;
   return { unconfigured: 'Hermes Desktop has no address yet. Add it in Settings under Chat surface.',
-    checking: `Checking ${url}…`, reachable: `Opening ${url}…`, unreachable: `Can't reach ${url}. ${WEBAPP_HOST_CHECK}`,
+    checking: `Checking ${url}…`, reachable: `Opening ${url}…`, unreachable: `${state.tunnelNote || `Can't reach ${url}.`} ${WEBAPP_HOST_CHECK}`,
     'needs-link': 'This Hermes has no sign-in, so it opens only with a one-use link. On the Hermes host, run hermes webapp --no-open and paste the link in the chat pane within 60 seconds. You need a new link each time Workspace restarts.',
     'sign-in': state.webappSignInError || (state.webappSignIn ? `Signing in as ${state.webappSignIn}…` : 'Sign in inside the chat pane, or save the username and password from webapp-signin.txt in Settings under Chat surface so Workspace signs in for you.'),
     ready: state.webappSignIn ? `Connected and signed in as ${state.webappSignIn}.` : 'Connected and signed in.' }[state.webappStatus] || '';

@@ -36,6 +36,7 @@ const { armQuitWatchdog } = require('./update-quit.cjs');
 const releaseChannel = require('./release-channel.cjs');
 const { createNativeChat } = require('./native-chat.cjs');
 const { keyFiles, importKey } = require('./key-import.cjs');
+const { createSshForward } = require('./ssh-forward.cjs');
 const { parseBaseUrl, createHermesApi } = require('./hermes-api.cjs');
 const { createGatewayLink, createGatewayOpener } = require('./gateway-link.cjs');
 const { createVaultFill } = require('./vault-fill.cjs');
@@ -159,6 +160,22 @@ let activeTabId = 'home', canvasTab = 'browser', activeVpsTabId = '', apiError =
 // 'native' shows Alan's native chat on the Hermes Sessions API.
 let canvasReturn = 'browser';
 let nativeChat = null, hermesHub = null, gatewayLink = null, chatTarget = 'telegram', webappStatus = 'unconfigured', webappTarget = '', webappSignInError = '', webappSignInTried = false, webappPrivate = false, canvasView = null, canvasPage = '';
+// Hermes opens its API (8642) and Hermes Desktop (9120) only on the server's loopback: when a chat address points at this
+// computer and a server SSH login is saved, the app holds the port forward itself.
+const sshForward = createSshForward({ spawn, onChange: () => {
+  if (isQuitting) return;
+  pushNativeState(); broadcast();
+  if (sshForward.state().state !== 'up') return;
+  if (nativeChat?.configured) nativeChat.activate();
+  if (webappStatus === 'unreachable') checkWebapp().catch(error => logError('hermes-webapp', error));
+} });
+function syncForward() {
+  if (isQuitting || !prefs) return;
+  const targets = [nativeChat?.summary().address, hermesWebappUrl(prefs.hermesWebappUrl)].flatMap((address) => {
+    try { const url = new URL(address); return url.protocol === 'http:' ? [{ host: url.hostname, port: Number(url.port || 80) }] : []; } catch { return []; }
+  });
+  sshForward.set(prefs.vpsBrowser?.sshHost, targets);
+}
 const WEBAPP_PARTITION = 'persist:hermes-webapp';
 const WEBAPP_PREFERENCES = { partition: WEBAPP_PARTITION, navigateOnDragDrop: false, contextIsolation: true, nodeIntegration: false, sandbox: true };
 // Canvas tabs beyond Browser, Bot screen and Terminal are Hermes Desktop pages (HashRouter routes). Cron jobs and Bot
@@ -573,7 +590,7 @@ function getState() {
     botSort: prefs.botSort || 'manual',
     autoOpenLinks: prefs.autoOpenLinks !== false, autoTakeover: prefs.autoTakeover !== false, carrySignIns: prefs.carrySignIns !== false, compactBeforeSend: prefs.compactBeforeSend !== false, promptCacheTtl: promptCacheTtl(),
     // activeTabId keeps its wire meaning for the renderer: the surface on screen, 'vps' for Bot screen.
-    canvasTab: shownCanvas(), canvasStrip: canvasStripTabs(shownCanvas(), webappCanvas()), webappCanvas: webappCanvas(), terminals: terminals.ids(), terminalNote, activeTabId: shownCanvas() === 'screen' ? 'vps' : shownTabId(), activeVpsTabId, browserTabHost: shownCanvas() === 'screen' && vpsTabs.has(activeVpsTabId) ? 'vps' : HOST_LABEL, browserContentsId: (() => { const contents = tabs.get(shownTabId())?.view?.webContents; return contents && !contents.isDestroyed() ? contents.id : null; })(), browserTabId: shownCanvas() === 'screen' && vpsTabs.has(activeVpsTabId) ? activeVpsTabId : activeTabId, avatarLibrary: avatarStore.publicLibrary(), avatarPreferences: prefs.avatarPreferences,
+    canvasTab: shownCanvas(), canvasStrip: canvasStripTabs(shownCanvas(), webappCanvas()), webappCanvas: webappCanvas(), terminals: terminals.ids(), terminalNote, tunnelNote: sshForward.note(), activeTabId: shownCanvas() === 'screen' ? 'vps' : shownTabId(), activeVpsTabId, browserTabHost: shownCanvas() === 'screen' && vpsTabs.has(activeVpsTabId) ? 'vps' : HOST_LABEL, browserContentsId: (() => { const contents = tabs.get(shownTabId())?.view?.webContents; return contents && !contents.isDestroyed() ? contents.id : null; })(), browserTabId: shownCanvas() === 'screen' && vpsTabs.has(activeVpsTabId) ? activeVpsTabId : activeTabId, avatarLibrary: avatarStore.publicLibrary(), avatarPreferences: prefs.avatarPreferences,
     locationDefault: prefs.locationDefault, sitePermissions: prefs.sitePermissions, extensions: extensionStore?.list() || [], downloads: downloadStore.list(),
     chatTarget, hermes: hermesSummary(), chatSurface: resolveChatSurface(prefs.chatSurface, webappStatus, !!nativeChat?.configured), hermesWebappUrl: prefs.hermesWebappUrl, webappStatus, nativeChat: nativeChat?.summary() || { configured: false }, nativeKeyFiles: keyFiles({ fs, home: os.homedir() }),
     webappSignIn: webappTarget ? webappSignIn.username(new URL(webappTarget).origin) : '', webappSignInError,
@@ -619,7 +636,7 @@ function sendState() {
 }
 // Tab titles, loading and activity fire in bursts; at most one send per frame.
 const scheduleState = coalesce(sendState, 16);
-function broadcast() { scheduleState(); }
+function broadcast() { syncForward(); scheduleState(); }
 // A command's reply must find the renderer already showing its result.
 function broadcastNow() { scheduleState(); scheduleState.flush(); }
 function fit(view, rect) {
@@ -2172,7 +2189,13 @@ function registerIpc() {
   ipcMain.handle('native:get', (event) => { trustSender(event); return nativeChat.getState(); });
   ipcMain.handle('native:command', async (event, name, value) => {
     trustSender(event);
-    try { return await nativeChat.command(name, value); }
+    try {
+      if (name === 'test') {
+        syncForward(); await sshForward.ready();
+        if (sshForward.state().state === 'failed') throw new Error(sshForward.note());
+      }
+      return await nativeChat.command(name, value);
+    }
     catch (error) { logError(`native ${String(name).slice(0, 40)}`, error); throw error; }
   });
   ipcMain.on('workspace:boot-mark', (event, name) => {
@@ -2354,7 +2377,7 @@ function registerIpc() {
       case 'native-import-key': {
         const result = importKey({ name: value.name, fs, home: os.homedir(), safeStorage, readBack: () => loadNativePersisted().key,
           save: (key) => nativeChat.configure({ ...(parseBaseUrl(nativeChat.summary().address) || { baseUrl: 'http://127.0.0.1:8642', profile: '' }), key }) });
-        applySurface(); broadcast(); return result;
+        syncForward(); applySurface(); broadcast(); return result;
       }
       case 'webapp-link': openWebappLink(value.url); break;
       case 'webapp-sign-in': {
@@ -4125,6 +4148,7 @@ else {
     // Loads the last-open conversation from disk before the window exists, so it paints with no network.
     nativeChat = createNativeChat({
       dir: app.getPath('userData'), loadConfig: loadNativePersisted, saveConfig: saveNativePersisted,
+      tunnelNote: () => sshForward.note(),
       apiFactory: createGatewayApiFactory({ restFactory: createHermesApi, link: gatewayLink, transport: () => ['websocket', 'sse'].includes(prefs.nativeTransport) ? prefs.nativeTransport : '' }),
       openLink: (url) => openTelegramLink(url), copyText: (text) => clipboard.writeText(text), visible: () => chatTarget === 'native', compactEnabled: () => prefs.compactBeforeSend !== false, cacheTtlMs: () => promptCacheTtl() === '1h' ? 60 * 60 * 1000 : 5 * 60 * 1000,
       notify: () => {
@@ -4206,7 +4230,7 @@ else {
       }
       return;
     }
-    isQuitting = true; hostComputer?.close(); try { modelAuthChild?.kill(); } catch {} pointerFeed?.stop(); clearTimeout(activityTimer); clearInterval(idleTimer); clearInterval(captchaTimer); clearTimeout(onlineTimer); clearTimeout(vpsTimer); clearInterval(vpsMirrorTimer); clearTimeout(vpsMirrorDebounce); prefsSaver.flush(); nativeChat?.flush(); tray?.destroy(); apiServer?.close();
+    isQuitting = true; sshForward.stop(); hostComputer?.close(); try { modelAuthChild?.kill(); } catch {} pointerFeed?.stop(); clearTimeout(activityTimer); clearInterval(idleTimer); clearInterval(captchaTimer); clearTimeout(onlineTimer); clearTimeout(vpsTimer); clearInterval(vpsMirrorTimer); clearTimeout(vpsMirrorDebounce); prefsSaver.flush(); nativeChat?.flush(); tray?.destroy(); apiServer?.close();
   });
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 }

@@ -11,6 +11,7 @@ const http = require('node:http');
 const { createAgentInput } = require('../src/agent-input.cjs');
 const { refsSource } = require('../src/browser-page.cjs');
 const { requireActor } = require('../src/core.cjs');
+const { quitFixture } = require('./electron-fixture.cjs');
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-agent-input-'));
 app.setPath('userData', temp);
 app.setName('Hermes isolated input test');
@@ -249,9 +250,9 @@ app.whenReady().then(async () => {
   await assert.rejects(agent.perform(tab, { action: 'click', epoch: 1, ref: 'e2' }, 'fixture-agent'), /human_has_control/);
   console.log('PASS: hidden and visible tab CDP replacement typing, clearing, click, Enter, offscreen submit by ref/selector, real pointer movement/cursor, scrolling, native shortcut isolation, takeover, and unchanged human draft/selection/native focus.');
 }).catch(error => { console.error(error.stack); process.exitCode = 1; }).finally(() => {
-  win?.destroy();
-  server?.close();
-  const exitCode = process.exitCode || 0;
-  app.exit(exitCode);
+  // The view is never closed with its window and keeps a CDP debugger attached; app.exit() alone has left the process
+  // alive after the last PASS until CI killed the step. quitFixture detaches and destroys it first (and caps teardown).
+  app.once('will-quit', () => app.exit(process.exitCode || 0));
+  quitFixture(server);
 });
 app.on('quit', () => { fs.rmSync(temp, { recursive: true, force: true }); });
