@@ -119,7 +119,7 @@ test('a failed cookie read destroys its private inspector and keeps the previous
 
 test('Linux basic_text is not treated as secure storage', async () => {
   const module = { exports: {} };
-  require('node:vm').runInNewContext(require('node:fs').readFileSync(require.resolve('../src/browser-session.cjs'), 'utf8'), { module, Buffer, process: { platform: 'linux' } });
+  require('node:vm').runInNewContext(require('node:fs').readFileSync(require.resolve('../src/browser-session.cjs'), 'utf8'), { module, Buffer, setTimeout, clearTimeout, process: { platform: 'linux' } });
   const f = fixture(module.exports.createBrowserSessionStore); f.basic(); f.cookies.set('persist:browser', [cookie]);
   await f.store.save();
   assert.equal(f.prefs().sessionCookies, undefined);
@@ -145,4 +145,71 @@ test('a save queued while a slow restore runs waits for it, so no restored sign-
   assert.deepEqual(order, ['Network.setCookies'], 'the save has not yet read the half-restored cookie jar');
   release(); await Promise.all([restoring, saving]);
   assert.equal(order[1], 'Network.getAllCookies');
+});
+
+function hangingStore(overrides, prefs, logs = []) {
+  class View {
+    constructor() { this.webContents = { destroy() {}, debugger: { attach() {}, sendCommand: async (method, params) => {
+      if (method === 'Network.setCookies') (View.restored ||= []).push(...params.cookies);
+      return method === 'Network.getAllCookies' ? { cookies: [cookie] } : {};
+    } } }; }
+  }
+  const writes = [];
+  const safeStorage = { isAsyncEncryptionAvailable: async () => true, getSelectedStorageBackend: () => 'gnome_libsecret',
+    encryptStringAsync: async value => Buffer.from(value), decryptStringAsync: async value => ({ result: value.toString() }), ...overrides };
+  const store = createBrowserSessionStore({ WebContentsView: View, safeStorage, getPreferences: () => prefs,
+    savePreferences: () => writes.push(1), log: message => logs.push(message), keychainTimeoutMs: 20 });
+  return { store, writes, logs, restored: () => View.restored || [] };
+}
+const never = () => new Promise(() => {});
+
+test('a keychain check that never answers does not stall later saves, keeps saved sign-ins, and is logged once', async () => {
+  let hang = true;
+  const prefs = { sessionCookies: 'previous-ciphertext' };
+  const f = hangingStore({ isAsyncEncryptionAvailable: () => hang ? never() : Promise.resolve(true) }, prefs);
+  await f.store.save(); await f.store.save(); await f.store.restore();
+  assert.equal(prefs.sessionCookies, 'previous-ciphertext', 'a timeout is unknown, not "unavailable", so nothing is wiped');
+  assert.equal(f.writes.length, 0);
+  assert.equal(f.logs.length, 1);
+  assert.match(f.logs[0], /isAsyncEncryptionAvailable did not answer/);
+  hang = false;
+  prefs.sessionCookies = Buffer.from(JSON.stringify({ 'persist:browser': [cookie] })).toString('base64');
+  await f.store.save();
+  assert.equal(f.writes.length, 1);
+});
+
+test('after the keychain answers again, a later hang is logged again', async () => {
+  let hang = true;
+  const f = hangingStore({ isAsyncEncryptionAvailable: () => hang ? never() : Promise.resolve(true) }, {});
+  await f.store.save(); hang = false; await f.store.save(); hang = true; await f.store.save();
+  assert.equal(f.logs.length, 2);
+});
+
+test('a hung encrypt keeps the previous encrypted snapshot, and a hung decrypt restores nothing, without blocking the chain', async () => {
+  const prefs = { sessionCookies: 'previous-ciphertext' };
+  const f = hangingStore({ encryptStringAsync: never, decryptStringAsync: never }, prefs);
+  await f.store.restore();
+  assert.deepEqual(f.restored(), []);
+  prefs.sessionCookies = 'previous-ciphertext';
+  const g = hangingStore({ encryptStringAsync: never }, prefs);
+  await g.store.save();
+  assert.equal(prefs.sessionCookies, 'previous-ciphertext');
+  assert.equal(g.writes.length, 0);
+  assert.match(f.logs.join('\n'), /decryptStringAsync did not answer/);
+  assert.match(g.logs.join('\n'), /encryptStringAsync did not answer/);
+});
+
+test('a save after a timed-out restore retries the restore first, and never overwrites the stored sign-ins until it completes', async () => {
+  let hang = true;
+  const original = Buffer.from(JSON.stringify({ 'persist:browser': [{ ...cookie, name: 'from-last-run' }] })).toString('base64');
+  const prefs = { sessionCookies: original };
+  const f = hangingStore({ isAsyncEncryptionAvailable: () => hang ? never() : Promise.resolve(true) }, prefs);
+  await f.store.restore();
+  await f.store.save();
+  assert.equal(prefs.sessionCookies, original, 'saving while the keychain is hung leaves the stored sign-ins alone');
+  hang = false;
+  await f.store.save();
+  assert.deepEqual(f.restored().map(c => c.name), ['from-last-run'], 'the skipped restore ran before the save');
+  assert.notEqual(prefs.sessionCookies, original);
+  assert.equal(f.writes.length, 1);
 });

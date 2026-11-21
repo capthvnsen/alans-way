@@ -1640,7 +1640,7 @@ const webappSignIn = createWebappSignIn({ safeStorage, getPreferences: () => pre
 // Every page load that needs restored sign-ins (persist:browser, persist:telegram) goes through signInGate; the window does not.
 const signInGate = createSignInGate({ settleWithin, capMs: BROWSER_RESTORE_WAIT_MS, onError: () => logError('browser-restore', new Error('Saved browser sign-ins could not be restored.')),
   onTaskError: error => logError('sign-in-gate', error), isQuitting: () => isQuitting });
-const browserSessionStore = createBrowserSessionStore({ WebContentsView, safeStorage, getPreferences: () => prefs, savePreferences: () => persistSettingsPreferences(prefs), mark: bootTimer.mark });
+const browserSessionStore = createBrowserSessionStore({ WebContentsView, safeStorage, getPreferences: () => prefs, savePreferences: () => persistSettingsPreferences(prefs), mark: bootTimer.mark, log: message => mainLog().write('browser-session', message) });
 async function saveBrowserSession() {
   savePreferences();
   await Promise.all(['persist:browser', 'persist:telegram', ...(webappView || canvasView ? [WEBAPP_PARTITION] : [])].map(async partition => {
