@@ -115,7 +115,7 @@ const listen = (handler, host) => new Promise(resolve => { const s = http.create
   await showing('webapp-slot');
   await helpSays('no address yet');
   await settings({ hermesWebappUrl: address });
-  await helpSays('hermes webapp --status');
+  await helpSays('under Agent machine'); // a loopback address with no saved SSH address
   assert.equal(webappViews().length, 0, 'an unreachable address opens no view');
 
   // Try again recovers once the host answers, and the view then asks for sign-in.

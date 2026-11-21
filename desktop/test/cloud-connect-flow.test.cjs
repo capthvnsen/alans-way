@@ -20,7 +20,7 @@ const connectSource = source.slice(start, end);
 
 const changedHost = process.env.HERMES_WORKSPACE_REQUIRE_TAILNET === '1' ? require('./tailnet-fixture.cjs').otherIp : 'new.invalid';
 
-function fixture({ diy = true, resume = false, step = 'connect', failure, probe, realBrokerSetup = false, model = null, tokenedProfiles = [],
+function fixture({ diy = true, resume = false, step = 'connect', failure, probe, realBrokerSetup = false, broker = false, model = null, tokenedProfiles = [],
   inventory = tokenedProfiles.map(name => name === '*' ? '/fixture/.hermes/.env' : `/fixture/.hermes/profiles/${name}/.env`).join('\n') } = {}) {
   const peerIp = realBrokerSetup ? fixtureTailnet : '192.0.2.7';
   const host = realBrokerSetup ? `agent@${peerIp}` : diy ? `user@${fixtureTailnet}` : `root@${peerIp}`;
@@ -32,6 +32,7 @@ function fixture({ diy = true, resume = false, step = 'connect', failure, probe,
       vpsBrowser: { sshHost: host },
     }),
   };
+  if (broker) prefs.vpsBrowser = { sshHost: host, brokerSshHost: 'broker@vm.tail1234.ts.net' };
   if (realBrokerSetup) prefs.vpsBrowser = { sshHost: host, brokerSshHost: `broker@${peerIp}`, scriptPath: '/app/host.cjs' };
   const readiness = vm.runInNewContext(source.slice(source.indexOf('function checkBrokerSetup()'), source.indexOf('function testAgentPath()')) + ';checkBrokerSetup', { prefs, brokerTarget: require('../src/vps-browser.cjs').brokerTarget });
   const calls = [];
@@ -123,7 +124,7 @@ test('Connect B starts its own request while A is pending and discards A even on
   assert.equal(stale.cancelled, true);
   assert.equal(stale.detail, '');
   assert.equal(f.prefs.vpsBrowser.sshHost, `user@${changedHost}`);
-  assert.equal(f.calls.filter(call => call === 'authorize').length, 1);
+  assert.equal(f.calls.filter(call => call === 'authorize').length, 0, 'no broker is saved, so the browser checks are not part of connecting');
 });
 
 test('changing the saved address cancels Connect before interpreting an old SSH failure', async () => {
@@ -188,7 +189,7 @@ for (const resume of [false, true]) {
     assert.equal(f.savedSteps.at(-1), 'model');
     assert.equal(f.prefs.onboarded, false, 'model and bot setup still remain');
     assert.equal(f.prefs.cloud.modelDetected, true, 'the model card must not read the server model again');
-    assert.deepEqual(f.calls, ['ssh', 'state', 'authorize', 'path', 'model', 'tokens', 'profiles']);
+    assert.deepEqual(f.calls, ['ssh', 'state', 'model', 'tokens', 'profiles']);
   });
 }
 
@@ -219,7 +220,7 @@ for (const [failure, stage, calls] of [
   ['path', 'path', ['ssh', 'state', 'authorize', 'path']],
 ]) {
   test(`a DIY ${failure} failure stays on connect`, async () => {
-    const f = fixture({ failure });
+    const f = fixture({ failure, broker: true });
     const result = await f.connect();
     assert.equal(result.ok, false);
     assert.equal(result.stage, stage);
@@ -242,7 +243,7 @@ for (const resume of [false, true]) {
     assert.equal(f.savedSteps.at(-1), 'model');
     assert.match(result.detail, /openrouter.*openai\/gpt-4\.1/);
     assert.equal(f.prefs.onboarded, false);
-    assert.deepEqual(f.calls, ['ssh', 'state', 'authorize', 'path', 'model', 'tokens', 'profiles']);
+    assert.deepEqual(f.calls, ['ssh', 'state', 'model', 'tokens', 'profiles']);
   });
 }
 
@@ -307,11 +308,31 @@ for (const diy of [true, false]) {
   });
 }
 
-test('changing the DIY host discards the previous broker and fails readiness', async () => {
+test('changing the DIY host discards the previous broker and no longer runs the browser checks', async () => {
   const f = fixture({ realBrokerSetup: true });
   const result = await f.requestConnect(`user@${changedHost}`);
+  assert.equal(result.ok, true, result.detail);
+  assert.equal(f.prefs.vpsBrowser.brokerSshHost, '');
+  assert.deepEqual(f.calls.filter(call => ['authorize', 'path'].includes(call)), []);
+});
+
+test('a fresh profile with its own server and no broker address finishes the connect step', async () => {
+  const f = fixture({ realBrokerSetup: true });
+  f.prefs.vpsBrowser = { sshHost: f.prefs.vpsBrowser.sshHost };
+  const result = await f.connect();
+  assert.equal(result.ok, true, result.detail);
+  assert.equal(f.prefs.cloud.step, 'model');
+  assert.ok(f.prefs.macSshHost, 'a prefilled computer address must not start the return-path test either');
+  assert.deepEqual(f.calls, ['ssh', 'state', 'model', 'tokens', 'profiles']);
+});
+
+test('a saved broker address still gates the DIY connect step exactly as before', async () => {
+  const f = fixture({ realBrokerSetup: true, resume: true });
+  f.prefs.vpsBrowser.brokerSshHost = f.prefs.vpsBrowser.sshHost;
+  const result = await f.connect();
   assert.equal(result.ok, false);
   assert.equal(result.stage, 'path');
-  assert.equal(f.prefs.vpsBrowser.brokerSshHost, '');
+  assert.match(result.detail, /separate broker SSH login/);
+  assert.equal(f.prefs.cloud.step, 'connect');
   assert.ok(!f.calls.includes('path'));
 });
