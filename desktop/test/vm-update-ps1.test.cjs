@@ -160,3 +160,40 @@ exit 2
     }
   });
 }
+
+// A failure after the checkout moved to the new tag must put the old checkout
+// back, branch and dependencies included, so the box never ends half-updated.
+for (const mode of ['npm', 'hook']) {
+  test(`Windows update rolls the checkout back when ${mode === 'npm' ? 'npm ci' : 'the post-update hook'} fails`, e2e, () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vm-rollback-ps1-')); dirs.push(dir);
+    const checkout = path.join(dir, 'app'), remote = path.join(dir, 'remote.git'), bin = path.join(dir, 'bin'), state = path.join(dir, 'state');
+    for (const d of [checkout, bin, state]) fs.mkdirSync(d);
+    execFileSync('git', ['init', '-q', '-b', 'main', checkout]);
+    git(checkout, 'config', 'user.email', 'fixture@example.com'); git(checkout, 'config', 'user.name', 'fixture');
+    fs.mkdirSync(path.join(checkout, 'desktop/scripts'), { recursive: true });
+    for (const version of ['0.3.1', '0.3.2']) {
+      fs.writeFileSync(path.join(checkout, 'desktop/package.json'), JSON.stringify({ version }));
+      if (version === '0.3.2' && mode === 'hook') fs.writeFileSync(path.join(checkout, 'desktop/scripts/vm-post-update.ps1'), 'exit 1\r\n');
+      git(checkout, 'add', '.'); git(checkout, 'commit', '-qm', version); git(checkout, 'tag', `v${version}`);
+    }
+    execFileSync('git', ['clone', '-q', '--bare', checkout, remote]);
+    git(checkout, 'reset', '-q', '--hard', 'v0.3.1');
+    const head = git(checkout, 'rev-parse', 'HEAD');
+    fs.writeFileSync(path.join(bin, 'npm.cmd'), '@echo off\r\necho ci>>"%FAKE_NPM_LOG%"\r\nif defined FAKE_NPM_FAIL (findstr /c:"0.3.2" package.json >nul && exit /b 1)\r\nexit /b 0\r\n');
+    const result = spawnSync(powershell, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', SCRIPT], {
+      encoding: 'utf8', timeout: 120000,
+      env: { ...process.env, PATH: `${bin};${gitBin};${process.env.PATH || process.env.Path}`, USERPROFILE: dir, LOCALAPPDATA: dir,
+        FAKE_GIT_EXE: realGit, FAKE_GIT_REMOTE: remote, FAKE_GIT_LOG: path.join(state, 'git.log'),
+        FAKE_NPM_LOG: path.join(state, 'npm.log'), ...(mode === 'npm' ? { FAKE_NPM_FAIL: '1' } : {}),
+        ALANS_WAY_DESKTOP_DIR: checkout, ALANS_WAY_VM_DATA: path.join(dir, 'missing'), ALANS_WAY_VM_TAG: 'v0.3.2' },
+    });
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    const report = JSON.parse(result.stdout.trim().split(/\r?\n/).filter((line) => line.startsWith('{')).at(-1));
+    assert.equal(report.ok, false);
+    assert.match(report.error, mode === 'npm' ? /npm ci failed\. Rolled back to v0\.3\.1/ : /post-update hook failed\. Rolled back to v0\.3\.1/);
+    assert.equal(git(checkout, 'rev-parse', '--abbrev-ref', 'HEAD'), 'main');
+    assert.equal(git(checkout, 'rev-parse', 'HEAD'), head);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(checkout, 'desktop/package.json'), 'utf8')).version, '0.3.1');
+    assert.equal(fs.readFileSync(path.join(state, 'npm.log'), 'utf8').trim().split(/\r?\n/).length, 2, 'dependencies reinstalled for the old checkout');
+  });
+}

@@ -98,10 +98,27 @@ if ($running) {
 }
 
 Say "Installing to $Dest"
-Remove-Item -Recurse -Force "$Dest.new" -ErrorAction SilentlyContinue
+# Swap by rename so the old app is only deleted once the new one is in place.
+# A run killed mid-swap leaves the old app only at $Dest.old; put it back first.
+$Old = "$Dest.old"
+if (-not (Test-Path $Dest) -and (Test-Path $Old)) { Move-Item $Old $Dest }
+Remove-Item -Recurse -Force "$Dest.new", $Old -ErrorAction SilentlyContinue
 Copy-Item -Recurse $Built "$Dest.new"
-Remove-Item -Recurse -Force $Dest -ErrorAction SilentlyContinue
-Move-Item "$Dest.new" $Dest
+if (-not (Test-Path (Join-Path "$Dest.new" "$AppName.exe"))) {
+  Remove-Item -Recurse -Force "$Dest.new" -ErrorAction SilentlyContinue
+  Die 'the copied app is incomplete; the installed app was left as it was'
+}
+if (Test-Path $Dest) {
+  try { Move-Item $Dest $Old } catch {
+    Remove-Item -Recurse -Force "$Dest.new" -ErrorAction SilentlyContinue
+    Die 'could not move the installed app aside; it was left as it was'
+  }
+}
+try { Move-Item "$Dest.new" $Dest } catch {
+  if (Test-Path $Old) { Move-Item $Old $Dest }
+  Die 'could not put the new app in place; the previous app was restored'
+}
+Remove-Item -Recurse -Force $Old -ErrorAction SilentlyContinue
 Start-Process (Join-Path $Dest "$AppName.exe")
 
 $conn = Join-Path $env:APPDATA 'Hermes Workspace\connection.json'

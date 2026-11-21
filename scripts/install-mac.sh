@@ -14,7 +14,7 @@ set -eu
 REPO_URL="https://github.com/capthvnsen/alans-way"
 DIR="${ALANS_WAY_DIR:-$HOME/alans-way}"
 APP_NAME="alans-way-localapp"
-DEST="/Applications/$APP_NAME.app"
+DEST="${ALANS_WAY_APP_DEST:-/Applications/$APP_NAME.app}"
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'install-mac: %s\n' "$*" >&2; exit 1; }
@@ -87,10 +87,21 @@ if pgrep -f "$DEST/Contents/MacOS/" >/dev/null 2>&1; then
 fi
 
 say "Installing to $DEST"
-rm -rf "$DEST.new"
+# Swap by rename so the old app is only deleted once the new one is in place.
+# A run killed mid-swap leaves the old app only at $DEST.old; put it back first.
+[ -e "$DEST" ] || [ ! -e "$DEST.old" ] || mv "$DEST.old" "$DEST"
+rm -rf "$DEST.new" "$DEST.old"
 ditto "$BUILT" "$DEST.new"
-rm -rf "$DEST"
-mv "$DEST.new" "$DEST"
+[ -f "$DEST.new/Contents/Info.plist" ] && [ -x "$DEST.new/Contents/MacOS/$APP_NAME" ] \
+  || { rm -rf "$DEST.new"; die "the copied app is incomplete; the installed app was left as it was"; }
+if [ -e "$DEST" ]; then
+  mv "$DEST" "$DEST.old" || { rm -rf "$DEST.new"; die "could not move the installed app aside; it was left as it was"; }
+fi
+mv "$DEST.new" "$DEST" || {
+  [ ! -e "$DEST.old" ] || mv "$DEST.old" "$DEST"
+  die "could not put the new app in place; the previous app was restored"
+}
+rm -rf "$DEST.old"
 open "$DEST"
 
 CONN="$HOME/Library/Application Support/Hermes Workspace/connection.json"
