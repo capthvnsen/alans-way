@@ -2,9 +2,9 @@
 
 const PARTITIONS = ['persist:browser', 'persist:telegram'];
 
-// Electron persists expiring cookies itself, but drops session-only cookies.
 const TIMED_OUT = Symbol('timed out');
 
+// Electron persists expiring cookies itself, but drops session-only cookies.
 function createBrowserSessionStore({ WebContentsView, safeStorage, getPreferences, savePreferences, mark = () => {}, log = () => {}, keychainTimeoutMs = 5000 }) {
   let pending = Promise.resolve();
   let stalled = false;
