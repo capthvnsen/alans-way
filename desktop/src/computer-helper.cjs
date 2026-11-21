@@ -42,7 +42,7 @@ function createHelper({ command, env, timeoutMs = REQUEST_TIMEOUT_MS, busyRetry 
     checkCall();
     const [file, ...args] = await command(mode);
     checkCall();
-    return spawn(file, args, { stdio: ['pipe', 'pipe', 'pipe'], env: env || process.env });
+    return spawn(file, args, { stdio: ['pipe', 'pipe', 'pipe'], env: env || process.env, windowsHide: true });
   }
 
   async function persistent(request, tracking) {

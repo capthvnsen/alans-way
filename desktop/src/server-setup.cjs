@@ -55,7 +55,7 @@ exec sh ./setup.sh ${args.map(shellQuote).join(' ')}
 }
 function runSsh(bin, args, { input, timeoutMs }) {
   return new Promise((resolve) => {
-    const child = spawn(bin, args, { timeout: timeoutMs });
+    const child = spawn(bin, args, { timeout: timeoutMs, windowsHide: true });
     let out = '', err = '';
     child.stdout.on('data', (chunk) => { out = (out + chunk).slice(-200000); });
     child.stderr.on('data', (chunk) => { err = (err + chunk).slice(-20000); });
