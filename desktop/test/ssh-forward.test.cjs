@@ -5,7 +5,8 @@ const { createSshForward } = require('../src/ssh-forward.cjs');
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
-function rig({ answering = new Set() } = {}) {
+// The real host rule depends on HERMES_WORKSPACE_REQUIRE_TAILNET (CI sets it); only the refusal test needs it.
+function rig({ answering = new Set(), isHost = (value) => /^[\w.@-]+$/.test(value) } = {}) {
   const spawned = [], queue = [], changes = [];
   const timers = { set: (fn, ms) => { const t = { fn, ms }; queue.push(t); return t; }, clear: (t) => { const i = queue.indexOf(t); if (i >= 0) queue.splice(i, 1); } };
   let pid = 1000;
@@ -16,7 +17,7 @@ function rig({ answering = new Set() } = {}) {
     return child;
   };
   const probe = async (port, bind) => answering.has(`${bind}:${port}`);
-  const forward = createSshForward({ spawn, probe, timers, sshOptions: ['-F', 'none'], onChange: () => changes.push(forward.state().state) });
+  const forward = createSshForward({ spawn, probe, timers, isHost, sshOptions: ['-F', 'none'], onChange: () => changes.push(forward.state().state) });
   const fire = async () => { const t = queue.shift(); await t.fn(); await flush(); return t; };
   return { forward, spawned, queue, changes, fire, answering };
 }
@@ -42,7 +43,7 @@ test('an ::1 address gets its own bind', async () => {
 });
 
 test('refuses a bad host, bad ports and non-loopback targets', async () => {
-  const { forward, spawned, queue } = rig();
+  const { forward, spawned, queue } = rig({ isHost: undefined });
   for (const host of ['', '-oProxyCommand=evil', 'a b', 'host;rm -rf', 'root@host\nx', '$(id)', 5, null]) assert.equal(forward.set(host, [{ host: '127.0.0.1', port: 8642 }]), false, String(host));
   for (const bad of [0, 65536, -1, 1.5, '8642', NaN, null]) assert.equal(forward.set('agent@vm.tail1234.ts.net', [{ host: '127.0.0.1', port: bad }]), false, String(bad));
   assert.equal(forward.set('agent@vm.tail1234.ts.net', [{ host: 'example.com', port: 8642 }, { host: '10.0.0.1', port: 8642 }]), false);
