@@ -79,7 +79,7 @@ Minutes lost to runs that a newer push to the same branch made pointless (no `co
 
 - `ALANS_WAY_HERMES_BUDGET=100` is the test's own input (`runScript`), not a product limit; the product default is 270 s. With 4 gateways the update gets `budget - reserve(60) - 8 - elapsed` seconds, so with a 100 s budget the update's window is 32 s minus everything the script already spent stopping gateways. On a runner where each `hermes` spawn takes 1 to 6 s (the log shows 24 s per whole script run on a slow runner, 1 s on a fast one), `elapsed` eats that margin and `hermes update` is cut off ("the hermes update timed out", seen on 10-30 and 11-20).
 - The other three failures were "no JSON result line": the first end-to-end test in the job hit the test's own 150 s `spawnSync` timeout with no output, on a runner where the next 19 tests took about 1 s each. The first one or two end-to-end runs in a Windows job pay a one-time cost (78 s, 119 s, then 25 s in the slow case; 150 s+, then 14 s, then 1 s in the fast case).
-- Fix on branch `agent/ci1-5-ps1-test-budget`: this one test passes `ALANS_WAY_HERMES_BUDGET=250` instead of 100. The reserve cap still discriminates (uncapped reserve 4 x 60 = 240 starves the update at 250; capped 125 leaves 117 s) but now tolerates about 97 s of elapsed time instead of 12 s. Nothing in the product changes. The cold-start cost of the first run is not explained; it is reported, not hidden (see the owner list).
+- Fix (#340): this one test passes `ALANS_WAY_HERMES_BUDGET=250` instead of 100. The reserve cap still discriminates (uncapped reserve 4 x 60 = 240 starves the update at 250; capped 125 leaves 117 s) but now tolerates about 97 s of elapsed time instead of 12 s. Nothing in the product changes. The cold-start cost of the first run is not explained; it is reported, not hidden (see the owner list).
 
 ## Slowest unit-test files (`node --test`, one file at a time, 4 files in parallel, measured on a loaded M-series Mac; 121 files, 410 s of summed file time)
 
@@ -109,20 +109,19 @@ The first five are 301 s of the 410 s: one shard cannot hold more than one of th
 
 ## Changes (branches, in merge order)
 
-Each is one commit on its own branch from `main` (rebased onto `0f541d9`); none is pushed. Branches 1 to 7 merge cleanly in this order; 8 needs 7. Numbers marked "projected" were derived from the tables above, not measured on CI.
+Status on 2026-11-20, after the work: seven of the eight are merged; the window-suite shards (4) are held. "Measured" is from the three or four green runs that followed the merges (too few for a p95).
 
-| # | Branch | What it does | Effect |
+| # | Pull request | What it does | Effect |
 |---|---|---|---|
-| 1 | `agent/ci1-1-cancel-superseded-pr-runs` | `concurrency` per PR branch with cancel-in-progress for `tests`, `ios`, `browser-egress`; main pushes and manual runs get a unique group | frees macOS runners sooner; 4.4% of weighted minutes |
-| 2 | `agent/ci1-2-merge-group-and-gate` | `merge_group` trigger; `changes` job (iOS-only PRs skip the desktop family); `gate` job to require | enables a merge queue; skips ~90% of a run on 4% of PRs |
-| 3 | `agent/ci1-3-shard-unit-tests` | `check` split into `check:syntax` + `check:unit`; unit tests as 3 balanced shards per OS | macOS check 320 s to ~150 s (projected), Linux 134 s to ~60-90 s (projected) |
-| 4 | `agent/ci1-4-shard-electron-suites` | the 34 window suites across 4 parallel macOS jobs | 801 s to ~215 s (projected), +14% billed macOS minutes for that job |
-| 5 | `agent/ci1-5-ps1-test-budget` | the Windows budget test no longer depends on runner speed | removes 5 of 156 Windows failures if the cause is as found |
-| 6 | `agent/ci1-6-job-timeouts` | real `timeout-minutes` on desktop and package jobs; iOS 45 to 25 | a hang costs minutes, not 6 hours |
-| 7 | `agent/ci1-7-check-diff` | `npm run check:diff`: syntax + only the unit tests a change reaches | local, 0.4 s selection; 3 s for a single-module change |
-| 8 | `agent/ci1-8-quick-pr-feedback` | `quick` Linux job on PRs running `check:diff` | first answer on a PR in ~15-30 s (projected) |
+| 1 | #339 | `concurrency` per PR branch with cancel-in-progress for `tests`, `ios`, `browser-egress`; main pushes and manual runs get a unique group | frees macOS runners sooner; 4.4% of weighted minutes |
+| 2 | #342 | `merge_group` trigger; `changes` job (iOS-only PRs skip the desktop family); `gate` job to require | enables a merge queue; skips ~90% of a run on 4% of PRs |
+| 3 | #343 | `check` split into `check:syntax` + `check:unit`; unit tests as 3 balanced shards per OS | measured: macOS 320 s to 129-219 s per shard, Linux 134 s to 59-109 s |
+| 4 | held, branch `agent/ci1-4-shard-electron-suites` | the 34 window suites across 4 parallel macOS jobs | 801 s to ~215 s (projected), +14% billed macOS minutes; held because macOS jobs already wait 1 to 13 minutes for a runner and four more would add to that queue |
+| 5 | #340 | the Windows budget test no longer depends on runner speed | removes 5 of 156 Windows failures if the cause is as found |
+| 6 | #341 | real `timeout-minutes` on desktop and package jobs; iOS 45 to 25 | a hang costs minutes, not 6 hours |
+| 7, 8 | #346 | `npm run check:diff` (syntax + only the unit tests a change reaches) and a `quick` Linux job on PRs that runs it | measured once: queue 2 s, run 10 s (syntax only: that PR's files mapped to no single test) |
 
-Merge 2, 3, 4 and 6 touch `tests.yml` in separate hunks; 3 and 7 both touch `desktop/package.json` and were placed to avoid a conflict. Branch 3 had to be rebased once already because `main` moved (#336 changed the `check` line and added two tests, whose weights I added). A new unit test file needs no change to run: it is assigned to a shard with the median weight until `desktop/test/shard-weights.json` is refreshed, and `test-shard.test.cjs` fails if the weights name a file that no longer exists.
+A new unit test file needs no change to run: it is assigned to a shard with the median weight until `desktop/test/shard-weights.json` is refreshed, and `test-shard.test.cjs` fails if the weights name a file that no longer exists.
 
 ### Merge queue, selection and the full suite
 
@@ -142,18 +141,19 @@ The brief's rule is that the full suite runs before anything reaches `main`. Tod
 
 ## Before and after
 
-Per pull-request run, no queueing, p50. "Now" is measured; "after" is projected from the step tables above with all eight branches merged.
+Per pull-request run, p50 run time without queueing. "Before" is the 150-run sample; "after" is the three or four green runs that followed the merges.
 
-| | Now | After (projected) |
+| | Before | After (measured) |
 |---|---|---|
-| First answer on a PR (`quick`) | none | ~15-30 s |
-| macOS unit tests | 334 s | ~165 s |
-| Linux unit tests | 143 s | ~70-100 s |
-| `desktop-electron` | 801 s | ~215 s per shard |
-| Windows | 553 s | 553 s (unchanged: `hermes-update-ps1` is 483 s) |
-| **Slowest job, so PR-to-result** | **13.4 min** | **~9.2 min (Windows becomes the longest)** |
-| Weighted minutes per PR run | ~264 | ~298 (+13%): Electron 14 to 16 macOS min, macOS unit 6 to 7, a few Linux minutes |
-| macOS minutes per week | 1,290 | ~1,470 before the cancel and skip savings, ~1,410 after (about +9%) |
+| First answer on a PR (`quick`) | none | 12 s (one run) |
+| macOS unit tests | 334 s | 129-219 s per shard |
+| Linux unit tests | 143 s | 59-109 s per shard |
+| `desktop-electron` | 801 s | 719-764 s (unchanged, shards held) |
+| Windows | 553 s | 452-572 s (unchanged: `hermes-update-ps1` is most of it) |
+| **Slowest job, so PR-to-result without queueing** | **13.4 min** | **about 13 min: `desktop-electron` is still the longest** |
+| Wait for a macOS runner in those runs | 3 s p50, 1,100-1,700 s p95 | 34 to 825 s; `desktop-electron` waited 79, 93 and 807 s |
+
+The unit shards did what was projected; the full result did not get faster because the window suites were not split, and they were not split because of the last row: nine macOS jobs per run now compete for the same shared pool.
 
 Splitting the Windows job (its 21 end-to-end cases are independent) or finding why a run costs 24 s would take the median to about 4 min. Queueing is not in these numbers: p95 PR-to-result today is dominated by it (36 min) and sharding more macOS jobs can make it worse, not better.
 
@@ -163,12 +163,12 @@ Splitting the Windows job (its 21 end-to-end cases are independent) or finding w
 
 Everything below needs an account, a repository setting, or a bigger bill. Costs are monthly at about 4.33 weeks, at the list prices above; if the repo stays public, the GitHub-hosted standard-runner figures are $0.
 
-1. **Turn on the merge queue and require `gate`** (Settings > Rules > Rulesets > Require a merge queue; require the `gate` check from `tests`). $0 for the setting. It adds one full run per merged PR (about 29 PRs a week x about 25 macOS minutes = roughly 725 macOS min a week, about $195 a month at $0.062 if private), unless PR runs are narrowed to the selection afterwards. Effect on p50/p95: none by itself; it is what makes narrower PR runs safe. Recommended: yes, after branches 2 to 4 are merged.
+1. **Turn on the merge queue and require `gate`** (Settings > Rules > Rulesets > Require a merge queue; require the `gate` check from `tests`). $0 for the setting. It adds one full run per merged PR (about 29 PRs a week x about 25 macOS minutes = roughly 725 macOS min a week, about $195 a month at $0.062 if private), unless PR runs are narrowed to the selection afterwards. Effect on p50/p95: none by itself; it is what makes narrower PR runs safe. Recommended: yes.
 2. **Fix the macOS queue (the p95)**, pick one:
    - *GitHub larger macOS runners*: not available to a personal account (the repo owner is a `User`), they need an organisation on Team or Enterprise (Team is $4 per user per month) and are billed even for public repos; macOS 6-core M1 is $0.16 per minute. If all 1,410 macOS minutes a week moved there and ran about as fast, about $980 a month plus the plan; I did not verify queue behaviour of that pool. Expect p95 queue to fall from 1,100 to 1,700 s to a few seconds.
    - *A third-party macOS runner provider* (Namespace, Blacksmith, WarpBuild, Cirrus and similar): needs an account and a GitHub app install. I could not verify current prices; one secondary source lists a 6 vCPU M4 Pro at $0.08 per minute (about $490 a month for 1,410 minutes, a guess, to be quoted). Effect: likely the same as above.
    - *A self-hosted Mac mini* (about $600 once, plus power and hosting; no per-minute cost): queue goes to about 0 and the Electron suites run on real hardware, but the repo is public, so a self-hosted runner must not run fork PRs (GitHub's own warning), and window suites need a logged-in GUI session on that machine. Effect: p95 queue gone, p50 flat. Cheapest, highest upkeep.
-   - Recommendation: stay on GitHub-hosted runners, merge branches 1 to 6, and decide on the runner after one week of real numbers from the sharded jobs. If the queue tail is still over 5 minutes, the self-hosted Mac mini is the cheapest way to remove it; the third-party provider is the least work.
-3. **Confirm the repository's visibility.** The API says `public`; the brief says private. If it is public the macOS bill today is $0 and the cost figures are only a "what if". $0.
+   - Recommendation: stay on GitHub-hosted runners and decide on the runner after one week of real numbers from the sharded jobs. If the queue tail is still over 5 minutes, the self-hosted Mac mini is the cheapest way to remove it; the third-party provider is the least work.
+3. **The repository is public** (confirmed by the owner), so the macOS bill today is $0 and the cost figures are only a "what if".
 4. **A Windows diagnostic run.** `hermes-update-ps1.test.cjs` costs 483 s per Windows job (about 20 weighted min per run) and its first end-to-end case sometimes takes 78 to 150+ s while later ones take 1 s. I could not find the cause without a Windows machine. Suggested: one `workflow_dispatch` run with per-call timing printed from `Invoke-Hermes`. $0, 10 minutes of your time to run it.
-5. **After merging 3 and 4, set `timeout-minutes` down** to about twice the new job times (a one-line edit in each job), and refresh `desktop/test/shard-weights.json` from a real run. $0.
+5. **Set `timeout-minutes` down** to about twice the new job times (a one-line edit in each job), and refresh `desktop/test/shard-weights.json` from a real run. $0.
