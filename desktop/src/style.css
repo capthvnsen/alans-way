@@ -27,6 +27,11 @@
   --color-success:#6cc39d;
   --color-warning:#e6b45c;
   --color-danger:#ef7d7d;
+  --color-danger-solid:#c93b3b;
+  --color-on-danger:#fff;
+  --glow-red:#e0605a;
+  --glow-blue:#5b8de0;
+  --glow-yellow:#e0b945;
   --tint-accent:color-mix(in srgb,var(--color-accent) 14%,transparent);
   --tint-success:color-mix(in srgb,var(--color-success) 14%,transparent);
   --tint-warning:color-mix(in srgb,var(--color-warning) 14%,transparent);
@@ -259,9 +264,9 @@ body:not(.darwin) .bots-hidden .chat-header{padding-left:52px}
 .bot-visibility input:checked:before{left:15px;background:white}
 .bot-visibility input:disabled{opacity:.5;cursor:wait}
 
-.bot-activity{font-size:12px;color:#9a9aa4;white-space:nowrap}.bot-activity.active{color:#a8e9cc}.bot-activity.active::before{content:"";display:inline-block;width:4px;height:4px;margin-right:5px;border-radius:50%;background:currentColor}#chat-avatar{cursor:pointer;flex-shrink:0}.chat-pill{overflow:visible}.chat-pill #chat-title{max-width:240px}
+#chat-avatar{cursor:pointer;flex-shrink:0}.chat-pill{overflow:visible}.chat-pill #chat-title{max-width:240px}
 
-.agent-presence{position:relative;display:flex;flex-direction:column;align-items:center;padding:24px 12px 17px;gap:9px;border-top:1px solid #242429;background:radial-gradient(ellipse at 50% 30%,#182a2355,transparent 75%)}.presence-avatar{width:112px;height:112px;border-radius:50%;padding:0;background:#18181c;color:#b9c7c1;font-size:29px}.presence-name{font-size:12px;max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#b0b0ba}.presence-status{font-size:12px;color:#8a8a95;text-align:center;line-height:1.5}.presence-status.active{color:#a8e9cc}@media(max-height:780px){.agent-presence{padding:15px 12px 10px;gap:7px}.presence-avatar{width:78px;height:78px}}
+.agent-presence{position:relative;display:flex;flex-direction:column;align-items:center;padding:24px 12px 17px;gap:9px;border-top:1px solid #242429;background:radial-gradient(ellipse at 50% 30%,#182a2355,transparent 75%)}.presence-avatar{width:112px;height:112px;border-radius:50%;padding:0;background:#18181c;color:#b9c7c1;font-size:29px}.presence-name{font-size:12px;max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#b0b0ba}.presence-status{display:flex;align-items:center;justify-content:center;gap:6px;font-size:12px;color:#8a8a95;text-align:center;line-height:1.5}.presence-status:empty{display:none}.presence-status.active{color:#a8e9cc}@media(max-height:780px){.agent-presence{padding:15px 12px 10px;gap:7px}.presence-avatar{width:78px;height:78px}}
 /* Site permission controls use the same dark input treatment as Settings. */
 .checklist{margin:6px 0 10px;padding:10px 12px;border:1px solid #2c2c34;border-radius:var(--radius-md);background:#141419}.check-item{margin:3px 0;font-size:11px;color:#8a8a99;line-height:1.6}.check-item.done{color:#7fd4a8}
 .check-group{margin:10px 0 2px;font-size:11px;letter-spacing:1.2px;text-transform:uppercase;color:#8a8a94}.check-row{margin:0 0 8px}.check-footer{margin:10px 0 2px}.check-row .settings-note{margin:0 0 4px 16px}.check-row .secondary-button{margin-left:16px;font-size:11px;padding:6px 10px}.check-row.ok .check-item{color:#7fd4a8}.check-row.warn .check-item{color:#e6b45c}.check-row.fail .check-item{color:#ef7d7d}
@@ -305,12 +310,6 @@ body:not(.darwin) .bots-hidden .chat-header{padding-left:52px}
 .tabs-panel-close:hover{background:var(--color-border-strong);color:var(--color-text)}
 .primary-badge{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:var(--radius-sm);background:#67a8ff22;border:1px solid #67a8ff55;color:#8fb8f5;font-size:12px;font-weight:700;letter-spacing:.5px;vertical-align:1px}
 .bot-row.primary{box-shadow:inset 2px 0 0 #67a8ff}
-.hw-dots{display:inline-flex;gap:2.5px;margin-right:5px;vertical-align:1px}
-.hw-dots i{width:3.5px;height:3.5px;border-radius:50%;background:#a8e9cc;opacity:.35;animation:hwWingBeat 1.5s infinite}
-.hw-dots i:nth-child(2){animation-delay:.18s}
-.hw-dots i:nth-child(3){animation-delay:.36s}
-@keyframes hwWingBeat{0%,55%,100%{transform:translateY(0) scale(1);opacity:.35}18%{transform:translateY(-3px) scale(1.3);opacity:1}34%{transform:translateY(1px) scale(.92);opacity:.7}}
-.bot-activity.active::before{display:none}
 .caption-actions{display:flex;align-items:center;gap:2px;flex-shrink:0}.cap-button{width:24px;height:24px;display:flex;align-items:center;justify-content:center;border-radius:var(--radius-sm);color:#90909a;font-size:15px;line-height:1;flex-shrink:0}.cap-button:hover{background:#27272a;color:white}.cap-button svg{width:14px;height:14px}.sort-button.active{color:#a8e9cc}.sort-menu{right:10px;top:calc(100% - 4px);z-index:40;min-width:150px}.sort-menu button.selected{color:var(--color-text)}.sort-menu button .sort-check{width:12px;opacity:0}.sort-menu button.selected .sort-check{opacity:1;color:var(--color-success)}
 
 /* Recent-downloads bubble under the browser toolbar, same pattern as sort-menu. */
@@ -362,7 +361,7 @@ body.win32 .pane-actions{padding-right:140px}.chat-note.warn{height:auto;min-hei
 .bot-list .bot-name{display:flex;align-items:center}.bot-label{min-width:0;overflow:hidden;text-overflow:ellipsis}
 .bot-list .bot-preview{line-height:16px;margin-top:5px}
 .bot-status{display:flex;align-items:center;gap:5px;flex-shrink:0;font-size:12px;font-weight:500;color:var(--muted)}.bot-status:empty{display:none}
-.bot-status .unread{margin:0}.bot-status .waiting-badge{margin:0}.bot-status .status-text.waiting{color:#f0b45a}.bot-status .status-text.bad{color:#ef7d7d}
+.bot-status .unread{margin:0}.bot-status .waiting-badge,.bot-status .error-badge{margin:0}
 .bot-list .bot-hide{top:50%;margin-top:-11px}
 .bot-list .bot-row.primary{box-shadow:none}.bot-list .primary-badge{flex-shrink:0;padding:2px 6px;line-height:1}
 .gateway-logo{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px}.gateway-logo svg{width:16px;height:16px}.gateway-logo img{width:16px;height:16px;border-radius:4px;object-fit:cover}
@@ -554,6 +553,13 @@ body.win32 .pane-actions{padding-right:140px}.chat-note.warn{height:auto;min-hei
 .chat-header .chat-pill{min-width:47px;flex-shrink:1}
 .chat-name{display:flex;align-items:center;gap:3px;min-width:0;min-height:var(--h-sm);padding:2px 4px;margin:-4px -4px;border-radius:var(--radius-sm);color:inherit;font-size:inherit;line-height:inherit}.chat-name:disabled{cursor:default;color:inherit}
 .chat-chevron{display:none;color:#a3a3ab;font-size:16px;line-height:1}.chat-name.openable{cursor:pointer}.chat-name.openable .chat-chevron{display:inline;visibility:hidden}.chat-name.openable:hover,.chat-name.openable:focus-visible{background:var(--row-bg)}.chat-name.openable:hover .chat-chevron,.chat-name.openable:focus-visible .chat-chevron{visibility:visible}
+/* Working: a faint glow down the right edge in the bot's avatar colour (--glow). It sits behind the text and takes no width. */
+.bot-row.working,.agent-presence.working{isolation:isolate}
+.bot-row.working::after,.agent-presence.working::after{content:"";position:absolute;inset:0 0 0 auto;width:22px;z-index:-1;border-radius:inherit;pointer-events:none;background:linear-gradient(to left,color-mix(in srgb,var(--glow) 12%,transparent),transparent);box-shadow:inset -2px 0 0 color-mix(in srgb,var(--glow) 45%,transparent)}
+@media(prefers-reduced-motion:no-preference){.bot-row.working::after,.agent-presence.working::after{animation:glow-pulse 3.2s ease-in-out infinite}}
+@keyframes glow-pulse{50%{opacity:.45}}
+.error-badge{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;width:16px;height:16px;border-radius:var(--radius-full);background:var(--color-danger-solid)}
+.error-badge svg{width:16px;height:16px;fill:none;stroke:var(--color-on-danger);stroke-width:2;stroke-linecap:round}
 .waiting-badge{width:9px;height:9px;flex-shrink:0;border-radius:50%;border:2px solid #f0b45a;margin-right:1px}
 
 /* ── Alan's native chat ── */
