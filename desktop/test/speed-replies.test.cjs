@@ -18,7 +18,7 @@ const crypto = require('node:crypto');
 // router-approved call would (see the app's commit check).
 const { harnessApproval, bindApproval, bindHarnessApproval } = require('./approval-fixture.cjs');
 const { spawn } = require('node:child_process');
-const { CDP } = require('../src/cdp.cjs');
+const { CDP, AGENT_BROWSER_FLAGS } = require('../src/cdp.cjs');
 const { followUpArmExpression, followUpCloseExpression, snapshotExpression, FOLLOW_UP_KEY } = require('../src/browser-page.cjs');
 
 function findChrome() {
@@ -250,7 +250,8 @@ before(async () => {
   port = site.address().port;
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-bench-'));
   profile = path.join(dir, 'profile');
-  browser = spawn(chrome, ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run', '--no-sandbox',
+  // The same flags the product starts its agent browser with: without them a background page throttles timers and stalls settle waits.
+  browser = spawn(chrome, [...AGENT_BROWSER_FLAGS, '--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run', '--no-sandbox',
     // A fresh macOS headless profile must not wait for the login keychain.
     ...(process.platform === 'darwin' ? ['--use-mock-keychain'] : []),
     '--host-resolver-rules=MAP bench.example 127.0.0.1', 'about:blank'], { stdio: 'ignore' });
@@ -1066,7 +1067,7 @@ test('navigation replies expose Next for another click without a snapshot, inclu
     const click = { action: 'click', ref };
     const reply = await act(tab, batch ? { action: 'batch', steps: [click] } : click);
     assert.equal(reply.status, 200, JSON.stringify(reply.data));
-    assert.equal(reply.data.effect.navigated, true);
+    assert.equal(reply.data.effect.navigated, true, JSON.stringify(reply.data));
     assert.equal(reply.data.elements[0].name, 'A book');
     assert.equal(reply.data.elements.at(-1).name, 'Next');
     assert.equal(reply.data.elements.length, 40);
@@ -1075,7 +1076,7 @@ test('navigation replies expose Next for another click without a snapshot, inclu
     if (batch) assert.equal(reply.data.results[0].clicked, undefined);
     const follow = await act(tab, { action: 'click', name: 'Next', role: 'a' });
     assert.equal(follow.status, 200, JSON.stringify(follow.data));
-    assert.equal(follow.data.effect.navigated, true);
+    assert.equal(follow.data.effect.navigated, true, JSON.stringify(follow.data));
   }
 });
 
