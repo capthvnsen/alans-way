@@ -26,8 +26,16 @@ API_SERVER_KEY=<a random value of at least 16 characters>
 Restart the gateway (`hermes gateway restart`). The API server listens on
 `127.0.0.1:8642`. Keep it on loopback and reach it one of two ways:
 
-- **SSH tunnel:** `ssh -N -L 8642:127.0.0.1:8642 <host>`, then use
-  `http://127.0.0.1:8642`.
+- **SSH tunnel:** with an SSH login for the server saved in Settings, the app
+  opens and keeps the tunnel itself whenever the address is `http://127.0.0.1:8642`
+  (or `localhost`, `[::1]`): it runs `ssh -N` in the background, restarts it if it
+  drops, and stops it when you quit. The chat says "Connecting to your server…"
+  while it connects and, if ssh fails, shows ssh's own reason. It does nothing
+  when something already answers on that port, such as your own tunnel or a Hermes
+  running on this computer. Without a saved login, or to run it yourself, use
+  `ssh -N -L 8642:127.0.0.1:8642 <host>` in a terminal and keep it open, then use
+  `http://127.0.0.1:8642`. Hermes Desktop on `http://127.0.0.1:9120` gets the same
+  treatment.
 - **Tailscale Serve:** `tailscale serve --bg --https=8443 http://127.0.0.1:8642`,
   then use `https://<machine>.<tailnet>.ts.net:8443`.
 
@@ -44,8 +52,9 @@ chat** in "Chat in the left pane with".
 
 **Import a saved key instead of pasting it:** put the key alone in
 `~/.config/alans-way/<name>-api-key` (`<name>` is lowercase letters, digits and
-dashes) and `chmod 600` it. Settings, Chat surface then shows **Import saved key**.
-One click checks the file (a regular file you own, mode 600, 16 to 500 bytes),
+dashes) and `chmod 600` it. Settings, Chat surface then shows **Import saved key**
+(the main button, "Import saved key and connect", when it is the only file and no key is
+saved yet). One click checks the file (a regular file you own, mode 600, 16 to 500 bytes),
 saves the key encrypted like a pasted one, reads it back, then deletes the file and
 runs **Test**. The address defaults to `http://127.0.0.1:8642` when none is set.
 

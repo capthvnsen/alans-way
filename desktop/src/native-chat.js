@@ -528,6 +528,7 @@
       if (notice.dataset.flash) return;
       const s = state, count = thread?.messages.length || 0;
       const text = !s.configured ? ''
+        : s.tunnel ? s.tunnel
         : s.status === 'unreachable' ? `Can't reach Hermes${count ? '; showing what was saved here' : ''}.`
           : s.status === 'unauthorized' ? 'Hermes refused the API key; check it in Settings.'
             : s.status === 'error' ? s.error : thread?.notice || '';
