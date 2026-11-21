@@ -64,9 +64,9 @@ if (typeof electron === 'string') {
         savedTabs: [{ url: `${base}/hang-source`, botId: 'shared' }] }));
       await launch('navigate', base);
       assert.deepEqual(JSON.parse(fs.readFileSync(path.join(profile, 'preferences.json'), 'utf8')).savedTabs.map(item => item.url), [`${base}/hang-target`]);
-      // A window.open tab whose first load is still pending saves nothing.
+      // A window.open tab whose first load is still pending saves nothing. The opener is the active tab, so it loads at startup.
       fs.writeFileSync(path.join(profile, 'preferences.json'), JSON.stringify({ onboarded: true, preview: false,
-        savedTabs: [{ url: `${base}/fast`, botId: 'shared' }] }));
+        savedTabs: [{ url: `${base}/fast`, botId: 'shared', active: true }] }));
       await launch('popup', base);
       assert.deepEqual(JSON.parse(fs.readFileSync(path.join(profile, 'preferences.json'), 'utf8')).savedTabs.map(item => item.url), [`${base}/fast`]);
       const userTabs = Array.from({ length: 14 }, (_, i) => ({ url: `${base}/user-${i}`, botId: 'fixture-bot', owner: 'user', active: i === 12 }));
@@ -107,23 +107,32 @@ if (typeof electron === 'string') {
     const telegram = webContents.getAllWebContents().find(item => item.session === session.fromPartition('persist:telegram'));
     telegram.stop();
     const state = () => evaluate('window.workspace.getState()');
+    const loaded = prefix => webContents.getAllWebContents().filter(item => item.getURL().startsWith(prefix));
     const base = process.env.HERMES_RESTORE_TABS_BASE;
     const phase = process.argv.at(-1);
     if (phase === 'pending') {
       const current = await waitFor(state, value => value.tabs.some(tab => tab.url === `${base}/fast`));
       assert.equal(current.tabs.length, 2, 'Only valid saved tabs are restored.');
       assert.ok(current.tabs.every(tab => !tab.internal), 'No restored tab is internal.');
+      assert.equal(loaded(base).length, 0, 'With no active tab, no restored tab loads at startup.');
     } else if (phase === 'restored') {
       const expected = [`${base}/fast`, `${base}/slow`];
       const current = await waitFor(state, value => value.tabs.length === 2 && value.tabs.every(tab => expected.includes(tab.url)));
       assert.deepEqual(current.tabs.map(tab => tab.url), expected);
       assert.ok(current.tabs.every(tab => !tab.internal && tab.url !== 'about:blank' && !tab.url.endsWith('/newtab.html')));
+      assert.equal(loaded(base).length, 0, 'Restored tabs still list their saved URL without having loaded it.');
+      // Activating a waiting tab loads it, and only that one.
+      await evaluate(`window.workspace.command('activate', { id: ${JSON.stringify(current.tabs[1].id)} })`);
+      await waitFor(() => loaded(`${base}/slow`), value => value.length === 1);
+      assert.equal(loaded(`${base}/fast`).length, 0, 'The other waiting tab stays unloaded.');
     } else if (phase === 'selection') {
       const current = await waitFor(state, value => value.tabs.length === 15 && value.tabs[14].internal && value.tabs.slice(0, 14).every(tab => tab.url.startsWith(`${base}/user-`)));
       assert.deepEqual(current.tabs.slice(0, 14).map(tab => tab.url), Array.from({ length: 14 }, (_, i) => `${base}/user-${i}`));
       assert.equal(current.activeTabId, current.tabs[12].id);
       assert.ok(current.tabs.every(tab => tab.owner === 'user' && tab.controller === 'human'));
       assert.ok(current.tabs[14].internal);
+      await waitFor(() => loaded(`${base}/user-`), value => value.length >= 1);
+      assert.deepEqual(loaded(`${base}/user-`).map(item => item.getURL()), [`${base}/user-12`], 'Only the active tab loads at startup.');
     } else if (phase === 'navigate') {
       // /hang-source never commits; a navigate to /hang-target before that
       // first commit must be what the quit-time snapshot saves.
