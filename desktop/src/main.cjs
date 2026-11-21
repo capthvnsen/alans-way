@@ -2452,7 +2452,7 @@ function registerIpc() {
         }
         if (typeof value.hermesWebappUrl === 'string') {
           next.hermesWebappUrl = hermesWebappUrl(value.hermesWebappUrl);
-          if (!next.hermesWebappUrl && value.hermesWebappUrl.trim()) throw new Error('Enter the address as https://your-machine.your-tailnet.ts.net');
+          if (!next.hermesWebappUrl && value.hermesWebappUrl.trim()) throw new Error('Enter an https://….ts.net address, or http://127.0.0.1:9120 together with your server’s SSH address.');
         }
         if (Number.isFinite(value.chatWidth)) next.chatWidth = Math.max(320, Math.min(680, value.chatWidth));
         for (const field of Object.keys(settingsFieldRevisions)) {

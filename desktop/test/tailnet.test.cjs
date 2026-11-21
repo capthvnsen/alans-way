@@ -65,3 +65,33 @@ test('the serve-name allowance is opt-in: desktop and viewer addresses stay lite
     assert.equal(viewerUrl(url), '', url);
   }
 });
+
+const fs = require('node:fs');
+const vm = require('node:vm');
+const rendererSource = fs.readFileSync(require.resolve('../src/renderer.js'), 'utf8');
+const mainSource = fs.readFileSync(require.resolve('../src/main.cjs'), 'utf8');
+const webappText = (state) => vm.runInNewContext(
+  rendererSource.slice(rendererSource.indexOf('const WEBAPP_HOST_CHECK'), rendererSource.indexOf('function renderWebappHelp')) + ';webappStatusText', { state })();
+
+test('the Hermes Desktop address wording names both accepted forms', () => {
+  const accepted = 'an https://….ts.net address, or http://127.0.0.1:9120 together with your server’s SSH address';
+  assert.ok(mainSource.includes(`Enter ${accepted}.`));
+  assert.ok(rendererSource.includes('https://….ts.net, or http://127.0.0.1:9120 with your server’s SSH address'));
+  assert.ok(!/your-tailnet\.ts\.net/.test(mainSource + rendererSource));
+});
+
+test('an unreachable loopback Hermes Desktop with no saved SSH address says to save one', () => {
+  const unreachable = { webappStatus: 'unreachable', hermesWebappUrl: 'http://127.0.0.1:9120/', tunnelNote: '', vpsBrowser: { sshHost: '' } };
+  const text = webappText(unreachable);
+  assert.match(text, /Save your server’s SSH address in Settings under Agent machine\./);
+  assert.doesNotMatch(text, /hermes webapp --status/);
+  assert.match(webappText({ ...unreachable, hermesWebappUrl: 'http://localhost:9120/' }), /Agent machine/);
+  assert.match(webappText({ ...unreachable, vpsBrowser: undefined }), /Agent machine/);
+});
+
+test('every other unreachable Hermes Desktop keeps the host check', () => {
+  const unreachable = { webappStatus: 'unreachable', hermesWebappUrl: 'http://127.0.0.1:9120/', tunnelNote: '', vpsBrowser: { sshHost: `agent@vm.tail1234.ts.net` } };
+  assert.match(webappText(unreachable), /hermes webapp --status/, 'a saved SSH address means the tunnel is wanted');
+  assert.match(webappText({ ...unreachable, vpsBrowser: {}, tunnelNote: 'Connecting to your server…' }), /Connecting to your server….*hermes webapp --status/);
+  assert.match(webappText({ ...unreachable, hermesWebappUrl: 'https://vm.tail1234.ts.net/', vpsBrowser: {} }), /hermes webapp --status/);
+});
