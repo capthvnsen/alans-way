@@ -44,4 +44,4 @@ function hermesWebappUrl(value) {
 }
 
 const SSH_OPTIONS = requireTailnet ? ['-F', 'none', '-o', 'ProxyCommand=none', '-o', 'ProxyJump=none', '-o', 'CanonicalizeHostname=no'] : [];
-module.exports = { requireTailnet, isTailnetAddress, isTailnetHost, tailnetUrl, hermesWebappUrl, SSH_OPTIONS };
+module.exports = { requireTailnet, isTailnetAddress, isTailnetHost, isServeName, tailnetUrl, hermesWebappUrl, SSH_OPTIONS };

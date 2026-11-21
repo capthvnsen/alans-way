@@ -1864,7 +1864,7 @@ async function cloudFinishTelegram(token, username) {
 // remote can never grow memory without bound.
 function localRun(file, args, { timeoutMs = 10000 } = {}) {
   return new Promise((resolve) => {
-    const child = spawn(file, args, { timeout: timeoutMs });
+    const child = spawn(file, args, { timeout: timeoutMs, windowsHide: true });
     let out = '', err = '';
     child.stdout.on('data', (chunk) => { out = (out + chunk).slice(-20000); });
     // stderr stays separate: a remote warning must not corrupt parsers that
@@ -1885,7 +1885,7 @@ function sshRun(host, remote, { timeoutMs = 15000 } = {}) {
 function sshWrite(host, remotePath, content, { timeoutMs = 15000 } = {}) {
   if (!isSshTarget(host)) return Promise.resolve({ code: -1, out: '', err: 'Use a literal Tailscale IP address.' });
   return new Promise((resolve) => {
-    const child = spawn('ssh', [...TAILNET_SSH_OPTIONS, '-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=accept-new', host, require('./env-write.cjs').command], { timeout: timeoutMs });
+    const child = spawn('ssh', [...TAILNET_SSH_OPTIONS, '-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=accept-new', host, require('./env-write.cjs').command], { timeout: timeoutMs, windowsHide: true });
     let out = '', err = '';
     child.stdout.on('data', (chunk) => { out = (out + chunk).slice(-20000); });
     child.stderr.on('data', (chunk) => { err = (err + chunk).slice(-20000); });
@@ -1917,7 +1917,7 @@ function testAgentPath() {
   if (!isSshTarget(mac)) throw new Error('The saved SSH address for this computer is invalid. Re-enter it as user@Tailscale-IP.');
   return new Promise((resolve) => {
     const child = spawn('ssh', [...TAILNET_SSH_OPTIONS, '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=accept-new', host,
-      `ssh ${TAILNET_SSH_OPTIONS.join(' ')} -o BatchMode=yes -o ConnectTimeout=6 -o StrictHostKeyChecking=accept-new ${cloudMigrate.shellQuote(mac)} 'echo AGENT_PATH_OK'`], { timeout: 30000 });
+      `ssh ${TAILNET_SSH_OPTIONS.join(' ')} -o BatchMode=yes -o ConnectTimeout=6 -o StrictHostKeyChecking=accept-new ${cloudMigrate.shellQuote(mac)} 'echo AGENT_PATH_OK'`], { timeout: 30000, windowsHide: true });
     let out = '';
     child.stdout.on('data', chunk => { out += chunk; });
     child.stderr.on('data', chunk => { out += chunk; });
@@ -2783,7 +2783,7 @@ function registerIpc() {
         return new Promise((resolve) => {
           // The migrate script runs in a hidden shell; each chunk is relayed to
           // the wizard log so the run is visible without a terminal.
-          const child = spawn('bash', ['-lc', cloudMigrate.migrateCommand(host)]);
+          const child = spawn('bash', ['-lc', cloudMigrate.migrateCommand(host)], { windowsHide: true });
           let out = '';
           const feed = (chunk) => {
             out = (out + chunk).slice(-60000);
@@ -2857,7 +2857,7 @@ function registerIpc() {
         // while the remote waits, and cloud-model-check polls for the result.
         if (!isSshTarget(host)) throw new Error('Use a literal Tailscale IP address.');
         if (!modelAuthChild) {
-          modelAuthChild = spawn('ssh', [...TAILNET_SSH_OPTIONS, '-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=accept-new', host, posixCommand(cloudModel.authLoginCommand())]);
+          modelAuthChild = spawn('ssh', [...TAILNET_SSH_OPTIONS, '-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=accept-new', host, posixCommand(cloudModel.authLoginCommand())], { windowsHide: true });
           let seen = '', opened = false;
           const feed = (chunk) => {
             seen = (seen + chunk).slice(-20000);

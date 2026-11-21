@@ -39,7 +39,7 @@ function build(compiler) {
     const csc = spawn(compiler, [
       '/nologo', '/target:exe', '/out:' + binary,
       ...assemblyPaths(compiler).map((assembly) => '/r:' + assembly), source,
-    ], { stdio: ['ignore', 'pipe', 'pipe'] });
+    ], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
     csc.stdout.on('data', (chunk) => { output += chunk; });
     csc.stderr.on('data', (chunk) => { output += chunk; });
     csc.on('error', (error) => reject(new Error(`Could not build the Windows computer helper: ${error.message}`)));

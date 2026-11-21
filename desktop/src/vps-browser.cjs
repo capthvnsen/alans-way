@@ -80,7 +80,7 @@ const { isTailnetHost, SSH_OPTIONS } = require('./tailnet.cjs');
 const sshResolvedHostname = (configText) => (/^hostname\s+(\S+)\s*$/m.exec(String(configText || '')) || [])[1] || '';
 // Resolves the hostname ssh will actually dial for sshHost; '' when ssh -G fails.
 function resolveSshHostname(sshHost, run = (args) => new Promise((resolve) => {
-  execFile('ssh', args, { timeout: 3000 }, (error, stdout) => resolve(error ? '' : stdout));
+  execFile('ssh', args, { timeout: 3000, windowsHide: true }, (error, stdout) => resolve(error ? '' : stdout));
 })) {
   if (!isSshTarget(sshHost)) return Promise.resolve('');
   return run([...SSH_OPTIONS, '-G', sshHost]).then(sshResolvedHostname);
@@ -162,7 +162,7 @@ function createVpsBrowser({ getConfig }) {
     if (pathProblem) throw new Error(pathProblem);
     const cmd = remoteCommand(cfg);
     return new Promise((resolve, reject) => {
-      const child = spawn('ssh', sshArgs(host, cmd), { stdio: ['pipe', 'pipe', 'pipe'] });
+      const child = spawn('ssh', sshArgs(host, cmd), { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
       let output = '',
         stderr = '',
         size = 0,
