@@ -23,29 +23,29 @@ function rig({ answering = new Set() } = {}) {
 
 test('starts one ssh with an argument array, the shared options and a forward per port', async () => {
   const { forward, spawned, fire } = rig();
-  assert.equal(forward.set('root@100.64.0.9', [{ host: '127.0.0.1', port: 9120 }, { host: 'localhost', port: 8642 }, { host: '127.0.0.1', port: 8642 }]), true);
+  assert.equal(forward.set('agent@vm.tail1234.ts.net', [{ host: '127.0.0.1', port: 9120 }, { host: 'localhost', port: 8642 }, { host: '127.0.0.1', port: 8642 }]), true);
   await fire();
   assert.equal(spawned.length, 1);
   const { command, args, options } = spawned[0];
   assert.equal(command, 'ssh');
   assert.deepEqual(args, ['-N', '-F', 'none', '-o', 'BatchMode=yes', '-o', 'ExitOnForwardFailure=yes', '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=3',
-    '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=accept-new', '-L', '127.0.0.1:8642:127.0.0.1:8642', '-L', '127.0.0.1:9120:127.0.0.1:9120', 'root@100.64.0.9']);
+    '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=accept-new', '-L', '127.0.0.1:8642:127.0.0.1:8642', '-L', '127.0.0.1:9120:127.0.0.1:9120', 'agent@vm.tail1234.ts.net']);
   assert.ok(args.every((a) => typeof a === 'string'));
   assert.equal(options.shell, undefined);
 });
 
 test('an ::1 address gets its own bind', async () => {
   const { forward, spawned, fire } = rig();
-  forward.set('root@100.64.0.9', [{ host: '[::1]', port: 8642 }]);
+  forward.set('agent@vm.tail1234.ts.net', [{ host: '[::1]', port: 8642 }]);
   await fire();
-  assert.deepEqual(spawned[0].args.slice(-3), ['-L', '[::1]:8642:127.0.0.1:8642', 'root@100.64.0.9']);
+  assert.deepEqual(spawned[0].args.slice(-3), ['-L', '[::1]:8642:127.0.0.1:8642', 'agent@vm.tail1234.ts.net']);
 });
 
 test('refuses a bad host, bad ports and non-loopback targets', async () => {
   const { forward, spawned, queue } = rig();
   for (const host of ['', '-oProxyCommand=evil', 'a b', 'host;rm -rf', 'root@host\nx', '$(id)', 5, null]) assert.equal(forward.set(host, [{ host: '127.0.0.1', port: 8642 }]), false, String(host));
-  for (const bad of [0, 65536, -1, 1.5, '8642', NaN, null]) assert.equal(forward.set('root@100.64.0.9', [{ host: '127.0.0.1', port: bad }]), false, String(bad));
-  assert.equal(forward.set('root@100.64.0.9', [{ host: 'example.com', port: 8642 }, { host: '10.0.0.1', port: 8642 }]), false);
+  for (const bad of [0, 65536, -1, 1.5, '8642', NaN, null]) assert.equal(forward.set('agent@vm.tail1234.ts.net', [{ host: '127.0.0.1', port: bad }]), false, String(bad));
+  assert.equal(forward.set('agent@vm.tail1234.ts.net', [{ host: 'example.com', port: 8642 }, { host: '10.0.0.1', port: 8642 }]), false);
   assert.equal(queue.length, 0);
   assert.equal(spawned.length, 0);
   assert.equal(forward.state().state, 'off');
@@ -54,7 +54,7 @@ test('refuses a bad host, bad ports and non-loopback targets', async () => {
 test('a port that already answers is not forwarded and nothing is spawned', async () => {
   const { forward, spawned, fire, answering } = rig();
   answering.add('127.0.0.1:8642');
-  forward.set('root@100.64.0.9', [{ host: '127.0.0.1', port: 8642 }]);
+  forward.set('agent@vm.tail1234.ts.net', [{ host: '127.0.0.1', port: 8642 }]);
   await fire();
   assert.equal(spawned.length, 0);
   assert.equal(forward.state().state, 'external');
@@ -63,14 +63,14 @@ test('a port that already answers is not forwarded and nothing is spawned', asyn
 test('only the ports that do not answer are forwarded', async () => {
   const { forward, spawned, fire, answering } = rig();
   answering.add('127.0.0.1:8642');
-  forward.set('root@100.64.0.9', [{ host: '127.0.0.1', port: 8642 }, { host: '127.0.0.1', port: 9120 }]);
+  forward.set('agent@vm.tail1234.ts.net', [{ host: '127.0.0.1', port: 8642 }, { host: '127.0.0.1', port: 9120 }]);
   await fire();
   assert.deepEqual(spawned[0].args.filter((a) => a.startsWith('127.0.0.1:')), ['127.0.0.1:9120:127.0.0.1:9120']);
 });
 
 test('connecting, then up once the port answers', async () => {
   const { forward, fire, answering, changes } = rig();
-  forward.set('root@100.64.0.9', [{ host: '127.0.0.1', port: 8642 }]);
+  forward.set('agent@vm.tail1234.ts.net', [{ host: '127.0.0.1', port: 8642 }]);
   assert.equal(forward.note(), 'Connecting to your server…');
   await fire();
   await fire();
@@ -84,7 +84,7 @@ test('connecting, then up once the port answers', async () => {
 
 test('ready() resolves when the attempt has an outcome', async () => {
   const { forward, fire, answering } = rig();
-  forward.set('root@100.64.0.9', [{ host: '127.0.0.1', port: 8642 }]);
+  forward.set('agent@vm.tail1234.ts.net', [{ host: '127.0.0.1', port: 8642 }]);
   let done = false;
   const waiting = forward.ready().then(() => { done = true; });
   await fire(); await flush();
@@ -97,12 +97,12 @@ test('ready() resolves when the attempt has an outcome', async () => {
 
 test('restarts with a doubling, capped backoff and reports the first stderr line', async () => {
   const { forward, spawned, queue, fire } = rig();
-  forward.set('root@100.64.0.9', [{ host: '127.0.0.1', port: 8642 }]);
+  forward.set('agent@vm.tail1234.ts.net', [{ host: '127.0.0.1', port: 8642 }]);
   await fire();
   const delays = [];
   for (let i = 0; i < 8; i += 1) {
     const child = spawned[spawned.length - 1];
-    child.stderr.emit('data', Buffer.from('Warning: Permanently added x\nroot@100.64.0.9: Permission denied (publickey).\nmore\n'));
+    child.stderr.emit('data', Buffer.from('Warning: Permanently added x\nagent@vm.tail1234.ts.net: Permission denied (publickey).\nmore\n'));
     child.emit('exit', 255);
     delays.push(queue.at(-1).ms);
     await fire();
@@ -110,13 +110,13 @@ test('restarts with a doubling, capped backoff and reports the first stderr line
   assert.deepEqual(delays, [1000, 2000, 4000, 8000, 16000, 30000, 30000, 30000]);
   assert.equal(spawned.length, 9);
   assert.equal(forward.state().state, 'failed');
-  assert.equal(forward.state().reason, 'root@100.64.0.9: Permission denied (publickey).');
-  assert.match(forward.note(), /^Can't open the connection to your server \(root@100\.64\.0\.9: Permission denied \(publickey\)\.\)\. Check that Tailscale is on/);
+  assert.equal(forward.state().reason, 'agent@vm.tail1234.ts.net: Permission denied (publickey).');
+  assert.match(forward.note(), /^Can't open the connection to your server \(agent@vm\.tail1234\.ts\.net: Permission denied \(publickey\)\.\)\. Check that Tailscale is on/);
 });
 
 test('a spawn error counts as a failure and retries', async () => {
   const { forward, spawned, queue, fire } = rig();
-  forward.set('root@100.64.0.9', [{ host: '127.0.0.1', port: 8642 }]);
+  forward.set('agent@vm.tail1234.ts.net', [{ host: '127.0.0.1', port: 8642 }]);
   await fire();
   spawned[0].emit('error', new Error('spawn ssh ENOENT'));
   spawned[0].emit('exit', null);
@@ -126,7 +126,7 @@ test('a spawn error counts as a failure and retries', async () => {
 
 test('a successful connection resets the backoff', async () => {
   const { forward, spawned, queue, fire, answering } = rig();
-  forward.set('root@100.64.0.9', [{ host: '127.0.0.1', port: 8642 }]);
+  forward.set('agent@vm.tail1234.ts.net', [{ host: '127.0.0.1', port: 8642 }]);
   await fire();
   spawned[0].emit('exit', 255);
   await fire();
@@ -143,7 +143,7 @@ test('a successful connection resets the backoff', async () => {
 
 test('stop kills only its own child, once, and nothing restarts', async () => {
   const { forward, spawned, queue, fire } = rig();
-  forward.set('root@100.64.0.9', [{ host: '127.0.0.1', port: 8642 }]);
+  forward.set('agent@vm.tail1234.ts.net', [{ host: '127.0.0.1', port: 8642 }]);
   await fire();
   const kills = [];
   const child = spawned[0];
@@ -160,20 +160,20 @@ test('stop kills only its own child, once, and nothing restarts', async () => {
 
 test('a child whose pid is not above 1 is never signalled', async () => {
   const { forward, spawned, fire } = rig();
-  forward.set('root@100.64.0.9', [{ host: '127.0.0.1', port: 8642 }]);
+  forward.set('agent@vm.tail1234.ts.net', [{ host: '127.0.0.1', port: 8642 }]);
   await fire();
   for (const pid of [0, 1, -5, undefined, 1.5]) {
     spawned[0].pid = pid;
     spawned[0].killed = 0;
     forward.set('', []);
     assert.equal(spawned[0].killed, 0, String(pid));
-    forward.set('root@100.64.0.9', [{ host: '127.0.0.1', port: 8642 }]);
+    forward.set('agent@vm.tail1234.ts.net', [{ host: '127.0.0.1', port: 8642 }]);
   }
 });
 
 test('no restart after the surface is turned off, even if ssh exits later', async () => {
   const { forward, spawned, queue, fire } = rig();
-  forward.set('root@100.64.0.9', [{ host: '127.0.0.1', port: 8642 }]);
+  forward.set('agent@vm.tail1234.ts.net', [{ host: '127.0.0.1', port: 8642 }]);
   await fire();
   spawned[0].emit('exit', 255);
   assert.equal(queue.length, 1);
@@ -185,11 +185,11 @@ test('no restart after the surface is turned off, even if ssh exits later', asyn
 
 test('a changed address replaces the tunnel after the old ssh exits', async () => {
   const { forward, spawned, queue, fire } = rig();
-  forward.set('root@100.64.0.9', [{ host: '127.0.0.1', port: 8642 }]);
+  forward.set('agent@vm.tail1234.ts.net', [{ host: '127.0.0.1', port: 8642 }]);
   await fire();
-  forward.set('root@100.64.0.9', [{ host: '127.0.0.1', port: 8642 }]);
+  forward.set('agent@vm.tail1234.ts.net', [{ host: '127.0.0.1', port: 8642 }]);
   assert.equal(spawned[0].killed, 0, 'the same wish does nothing');
-  forward.set('root@100.64.0.9', [{ host: '127.0.0.1', port: 8643 }]);
+  forward.set('agent@vm.tail1234.ts.net', [{ host: '127.0.0.1', port: 8643 }]);
   assert.equal(spawned[0].killed, 1);
   assert.equal(spawned.length, 1, 'waits for the old ssh to let go');
   await flush();
@@ -202,7 +202,7 @@ test('a changed address replaces the tunnel after the old ssh exits', async () =
 test('an own tunnel that dies is noticed again after the external check interval', async () => {
   const { forward, spawned, queue, fire, answering } = rig();
   answering.add('127.0.0.1:8642');
-  forward.set('root@100.64.0.9', [{ host: '127.0.0.1', port: 8642 }]);
+  forward.set('agent@vm.tail1234.ts.net', [{ host: '127.0.0.1', port: 8642 }]);
   await fire();
   assert.equal(queue.at(-1).ms, 30000);
   answering.clear();
