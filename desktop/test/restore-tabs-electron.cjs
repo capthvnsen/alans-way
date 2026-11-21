@@ -64,9 +64,9 @@ if (typeof electron === 'string') {
         savedTabs: [{ url: `${base}/hang-source`, botId: 'shared' }] }));
       await launch('navigate', base);
       assert.deepEqual(JSON.parse(fs.readFileSync(path.join(profile, 'preferences.json'), 'utf8')).savedTabs.map(item => item.url), [`${base}/hang-target`]);
-      // A window.open tab whose first load is still pending saves nothing.
+      // A window.open tab whose first load is still pending saves nothing. The opener is the active tab, so it loads at startup.
       fs.writeFileSync(path.join(profile, 'preferences.json'), JSON.stringify({ onboarded: true, preview: false,
-        savedTabs: [{ url: `${base}/fast`, botId: 'shared' }] }));
+        savedTabs: [{ url: `${base}/fast`, botId: 'shared', active: true }] }));
       await launch('popup', base);
       assert.deepEqual(JSON.parse(fs.readFileSync(path.join(profile, 'preferences.json'), 'utf8')).savedTabs.map(item => item.url), [`${base}/fast`]);
       const userTabs = Array.from({ length: 14 }, (_, i) => ({ url: `${base}/user-${i}`, botId: 'fixture-bot', owner: 'user', active: i === 12 }));
