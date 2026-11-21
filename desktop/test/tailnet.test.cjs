@@ -76,7 +76,7 @@ const webappText = (state) => vm.runInNewContext(
 test('the Hermes Desktop address wording names both accepted forms', () => {
   const accepted = 'an https://….ts.net address, or http://127.0.0.1:9120 together with your server’s SSH address';
   assert.ok(mainSource.includes(`Enter ${accepted}.`));
-  assert.ok(rendererSource.includes('https://….ts.net, or http://127.0.0.1:9120 with your server’s SSH address'));
+  assert.ok(rendererSource.includes('https://….ts.net or http://127.0.0.1:9120'));
   assert.ok(!/your-tailnet\.ts\.net/.test(mainSource + rendererSource));
 });
 

@@ -1762,7 +1762,7 @@ function mountChatSurface(body) {
   const openHermes = element('button', 'secondary-button', 'Open Hermes conversations'); openHermes.id = 'settings-open-hermes'; body.append(openHermes);
   openHermes.onclick = () => { closeModal(); command('show-hermes'); };
   body.append(element('h4', 'settings-subheading', 'Hermes Desktop'));
-  const address = settingsField(body, 'settings-webapp-url', 'Address', state.hermesWebappUrl, 'https://….ts.net, or http://127.0.0.1:9120 with your server’s SSH address'); address.setAttribute('aria-label', 'Hermes Desktop address');
+  const address = settingsField(body, 'settings-webapp-url', 'Address', state.hermesWebappUrl, 'https://….ts.net or http://127.0.0.1:9120'); address.setAttribute('aria-label', 'Hermes Desktop address');
   const save = element('button', 'secondary-button', 'Save address'); body.append(save);
   const saveStatus = settingsStatus(body);
   save.onclick = async () => { const reply = await runSettingsAction(save, saveStatus, () => api.command('settings', { hermesWebappUrl: address.value }), 'Saving…', 'Address saved.'); if (reply.ok) clean(address); };
