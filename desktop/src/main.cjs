@@ -1083,6 +1083,8 @@ function createTab({ url = 'about:blank', filePath = '', openerId = '', botId = 
   view.webContents.on('did-start-loading', () => { tab.loading = true; tab.error = ''; broadcast(); });
   view.webContents.on('did-start-navigation', (_event, url, inPlace, isMainFrame) => {
     if (!isMainFrame || inPlace) return;
+    // Any navigation supersedes a restored URL still waiting to load, or showing the tab would load the old page over it.
+    tab.pendingUrl = '';
     // getURL()/reload() still name the old committed page until this commits.
     tab.navigationUrl = url; tab.recoveryUrl = ''; tab.error = ''; tab.loading = true; broadcast();
   });
