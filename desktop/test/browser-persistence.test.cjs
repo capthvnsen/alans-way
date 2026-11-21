@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const { restorePlan, savedUrl } = require('../src/lazy-tabs.cjs');
 
 const source = fs.readFileSync(require.resolve('../src/main.cjs'), 'utf8');
 function section(start, end) {
@@ -18,7 +19,7 @@ function tab(id, url, extra = {}) {
 }
 function snapshotFixture(entries, activeTabId) {
   const context = vm.createContext({ vaultLock: { isLocked: () => false }, tabs: new Map(entries.map(item => [item.id, item])), activeTabId,
-    prefs: {}, isQuitting: false, win: { isDestroyed: () => false }, NEWTAB_URL: 'file:///fixture/newtab.html',
+    prefs: {}, isQuitting: false, win: { isDestroyed: () => false }, NEWTAB_URL: 'file:///fixture/newtab.html', savedUrl,
     createSaver: options => ({ flush: options.snapshot }),
   });
   vm.runInContext(section('// Explicit changes save at once;', '\nfunction savePreferences()'), context);
@@ -41,7 +42,7 @@ test('only user-created tabs survive a restart, even after task handback or user
 test('shutdown does not overwrite the saved user tabs when Chromium destroys its views', () => {
   const context = vm.createContext({ vaultLock: { isLocked: () => false }, tabs: new Map(), activeTabId: 'home', isQuitting: true,
     prefs: { savedTabs: [{ url: 'https://user.example/', owner: 'user', active: true }] },
-    win: { isDestroyed: () => false }, createSaver: options => ({ flush: options.snapshot }),
+    win: { isDestroyed: () => false }, createSaver: options => ({ flush: options.snapshot }), savedUrl,
   });
   vm.runInContext(section('// Explicit changes save at once;', '\nfunction savePreferences()'), context);
   assert.equal(vm.runInContext('prefsSaver.flush().savedTabs.length', context), 1);
@@ -50,7 +51,7 @@ test('shutdown does not overwrite the saved user tabs when Chromium destroys its
 function restoreFixture(savedTabs) {
   const restored = [];
   const context = vm.createContext({ vaultLock: { isLocked: () => false }, prefs: { savedTabs, canvasTabs: {} }, activeTabId: 'home', CANVAS_TABS: ['browser', 'screen'],
-    fileURLToPath: require('node:url').fileURLToPath,
+    fileURLToPath: require('node:url').fileURLToPath, restorePlan,
     createTab: options => { const created = { ...options, id: `restored-${restored.length}` }; restored.push(created); return created; },
   });
   if (source.includes('function restoreBrowserTabs()')) {
@@ -68,6 +69,7 @@ test('restart restores every user tab in order and selects the saved active tab'
   const result = restoreFixture(saved);
   assert.deepEqual(result.restored.map(item => item.url), [...Array.from({ length: 14 }, (_, i) => `https://user.example/${i}`), 'about:blank']);
   assert.equal(result.activeTabId, 'restored-12');
+  assert.deepEqual(result.restored.filter(item => item.defer === false).map(item => item.url), ['https://user.example/12', 'about:blank'], 'only the active tab and the new-tab page load at startup');
   assert.ok(result.restored.every(item => item.controller !== 'agent' && item.activate === false));
 });
 
@@ -140,6 +142,7 @@ test('Move to VM and back carries the page’s sign-in, set before the destinati
     session: { fromPartition: () => ({ cookies: { set: async (cookie) => { events.push(['cookie', cookie.name, cookie.value]); } } }) },
     toElectronCookies,
     createTab: (options) => { events.push(['open', options.url]); return { id: 'mac-back', view: { webContents: page(options.url) } }; },
+    settleWithin: promise => promise, loadPendingTab: async () => {}, PENDING_LOAD_WAIT_MS: 0,
     restoreExpression() {}, checkpointExpression: require('../src/browser-page.cjs').checkpointExpression, savePreferences() {}, applyLayout() {}, broadcast() {}, signInsTravel: async () => true,
   });
   vm.runInContext(section('const handoffRequests =', '\n// History navigation has no promise.'), context);
@@ -165,6 +168,7 @@ test('without consent or a tailnet path a Move carries no sign-ins, and a failed
     pageCookies: async () => { throw new Error('cookies must not be read'); },
     vpsBrowser: { request: async (route, method, body) => { if (fail) throw new Error('VPS browser SSH unavailable.'); requests.push(body); return { id: 'vm-new' }; } },
     remoteRequest: async () => ({ verification: 'ready', restored: 0, skipped: 0, tab: { id: 'vm-new' } }),
+    settleWithin: promise => promise, loadPendingTab: async () => {}, PENDING_LOAD_WAIT_MS: 0,
     restoreExpression() {}, checkpointExpression: require('../src/browser-page.cjs').checkpointExpression, savePreferences() {}, applyLayout() {}, broadcast() {}, signInsTravel: async () => false,
   });
   vm.runInContext(section('const handoffRequests =', '\n// History navigation has no promise.'), context);
@@ -183,6 +187,7 @@ test('a Move from a page that never answers fails and gives the tab back instead
   const macTab = { id: 'mac-task', botId: 'bot-a', controller: 'agent', owner: 'bot', queue: Promise.resolve(), view: { webContents: { executeJavaScript: () => new Promise(() => {}) } } };
   const context = vm.createContext({ boundedJs: (wc, code) => boundedJs(wc, code, 30), vaultLock: { isLocked: () => false }, tabs: new Map([['mac-task', macTab]]), vpsTabs: new Map(), HOST_LABEL: 'mac', crypto: { randomUUID: () => 'h' }, prefs: { handoffs: [] },
     changeController: (id, controller) => { macTab.controller = controller; },
+    settleWithin: promise => promise, loadPendingTab: async () => {}, PENDING_LOAD_WAIT_MS: 0,
     remoteRequest: async () => ({}), restoreExpression() {}, checkpointExpression: require('../src/browser-page.cjs').checkpointExpression, savePreferences() {}, applyLayout() {}, broadcast() {}, signInsTravel: async () => false,
   });
   vm.runInContext(section('const handoffRequests =', '\n// History navigation has no promise.'), context);
