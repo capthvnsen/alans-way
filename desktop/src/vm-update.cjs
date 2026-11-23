@@ -64,7 +64,7 @@ function parseResultLine(output) {
 
 function defaultRun(bin, args, { input, timeoutMs = 45000, onStdout, verbatim = false } = {}) {
   return new Promise((resolve) => {
-    const child = spawn(bin, args, { timeout: timeoutMs, windowsVerbatimArguments: verbatim });
+    const child = spawn(bin, args, { timeout: timeoutMs, windowsVerbatimArguments: verbatim, windowsHide: true });
     let out = '', err = '';
     child.stdout.on('data', (c) => {
       // The structured result is the last line, after potentially verbose

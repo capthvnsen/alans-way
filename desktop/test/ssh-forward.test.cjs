@@ -1,12 +1,14 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
+const fs = require('node:fs');
+const path = require('node:path');
 const { createSshForward } = require('../src/ssh-forward.cjs');
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
 // The real host rule depends on HERMES_WORKSPACE_REQUIRE_TAILNET (CI sets it); only the refusal test needs it.
-function rig({ answering = new Set(), isHost = (value) => /^[\w.@-]+$/.test(value) } = {}) {
+function rig({ answering = new Set(), isHost = (value) => /^[\w.@-]+$/.test(value), platform } = {}) {
   const spawned = [], queue = [], changes = [];
   const timers = { set: (fn, ms) => { const t = { fn, ms }; queue.push(t); return t; }, clear: (t) => { const i = queue.indexOf(t); if (i >= 0) queue.splice(i, 1); } };
   let pid = 1000;
@@ -17,7 +19,7 @@ function rig({ answering = new Set(), isHost = (value) => /^[\w.@-]+$/.test(valu
     return child;
   };
   const probe = async (port, bind) => answering.has(`${bind}:${port}`);
-  const forward = createSshForward({ spawn, probe, timers, isHost, sshOptions: ['-F', 'none'], onChange: () => changes.push(forward.state().state) });
+  const forward = createSshForward({ spawn, probe, timers, isHost, platform, sshOptions: ['-F', 'none'], onChange: () => changes.push(forward.state().state) });
   const fire = async () => { const t = queue.shift(); await t.fn(); await flush(); return t; };
   return { forward, spawned, queue, changes, fire, answering };
 }
@@ -33,6 +35,7 @@ test('starts one ssh with an argument array, the shared options and a forward pe
     '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=accept-new', '-L', '127.0.0.1:8642:127.0.0.1:8642', '-L', '127.0.0.1:9120:127.0.0.1:9120', 'agent@vm.tail1234.ts.net']);
   assert.ok(args.every((a) => typeof a === 'string'));
   assert.equal(options.shell, undefined);
+  assert.equal(options.windowsHide, true);
 });
 
 test('an ::1 address gets its own bind', async () => {
@@ -111,18 +114,73 @@ test('restarts with a doubling, capped backoff and reports the first stderr line
   assert.deepEqual(delays, [1000, 2000, 4000, 8000, 16000, 30000, 30000, 30000]);
   assert.equal(spawned.length, 9);
   assert.equal(forward.state().state, 'failed');
-  assert.equal(forward.state().reason, 'agent@vm.tail1234.ts.net: Permission denied (publickey).');
-  assert.match(forward.note(), /^Can't open the connection to your server \(agent@vm\.tail1234\.ts\.net: Permission denied \(publickey\)\.\)\. Check that Tailscale is on/);
-});
+  assert.equal(forward.state().reason, "The server refused this computer's SSH key. A key protected by a passphrase must be loaded in ssh-agent first.");
+  });
+
+async function failWith(options, fail) {
+  const r = rig(options);
+  r.forward.set(options?.host || 'agent@vm.tail1234.ts.net', [{ host: '127.0.0.1', port: 8642 }]);
+  await r.fire();
+  fail(r.spawned[0]);
+  return r;
+}
+const stderrOf = (text) => (child) => { child.stderr.emit('data', Buffer.from(text)); child.emit('exit', 255); };
+const enoent = (child) => { child.emit('error', Object.assign(new Error('spawn ssh ENOENT'), { code: 'ENOENT' })); child.emit('exit', null); };
 
 test('a spawn error counts as a failure and retries', async () => {
-  const { forward, spawned, queue, fire } = rig();
-  forward.set('agent@vm.tail1234.ts.net', [{ host: '127.0.0.1', port: 8642 }]);
-  await fire();
-  spawned[0].emit('error', new Error('spawn ssh ENOENT'));
-  spawned[0].emit('exit', null);
-  assert.equal(forward.state().reason, 'spawn ssh ENOENT');
+  const { forward, queue } = await failWith({}, enoent);
+  assert.equal(forward.state().state, 'failed');
   assert.equal(queue.at(-1).ms, 1000);
+});
+
+test('a missing ssh program is said plainly, with the Windows fix only on Windows', async () => {
+  const mac = await failWith({}, enoent);
+  assert.equal(mac.forward.note(), "Can't open the connection to your server. The ssh program was not found. Workspace keeps trying.");
+  const win = await failWith({ platform: 'win32' }, enoent);
+  assert.equal(win.forward.note(), "Can't open the connection to your server. The ssh program was not found. You can add OpenSSH Client under Settings > Optional features. Workspace keeps trying.");
+});
+
+test('a changed host key is said plainly and the @ banner never shows', async () => {
+  const banner = '@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @\n@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\nIT IS POSSIBLE THAT SOMEONE IS DOING SOMETHING NASTY!\n';
+  const { forward } = await failWith({}, stderrOf(banner));
+  assert.equal(forward.note(), "Can't open the connection to your server. The server's identity has changed since last time. If that is expected, remove its old entry from known_hosts. Workspace keeps trying.");
+  assert.doesNotMatch(forward.note() + forward.state().reason, /@/);
+});
+
+test('a refused key is said plainly', async () => {
+  const { forward } = await failWith({}, stderrOf('agent@vm.tail1234.ts.net: Permission denied (publickey,password).\n'));
+  assert.equal(forward.note(), "Can't open the connection to your server. The server refused this computer's SSH key. A key protected by a passphrase must be loaded in ssh-agent first. Workspace keeps trying.");
+});
+
+test('any other failure keeps ssh\'s own line and names Tailscale only for a tailnet host', async () => {
+  const stderr = stderrOf('ssh: connect to host vm port 22: Operation timed out\n');
+  const tailnet = await failWith({}, stderr);
+  assert.equal(tailnet.forward.note(), "Can't open the connection to your server (ssh: connect to host vm port 22: Operation timed out). Check that Tailscale is on and that your SSH key works. Workspace keeps trying.");
+  const other = await failWith({ host: 'agent@vm.example.com' }, stderr);
+  assert.equal(other.forward.note(), "Can't open the connection to your server (ssh: connect to host vm port 22: Operation timed out). Check that your SSH key works. Workspace keeps trying.");
+});
+
+test('every console program the app starts is hidden on Windows', () => {
+  const src = path.join(__dirname, '../src');
+  // These only ever run on macOS or Linux.
+  const macOnly = new Set(['computer.cjs', 'mac-update.cjs', 'terminal.cjs']);
+  const callEnd = (text, open) => {
+    let depth = 0, quote = '';
+    for (let i = open; i < text.length; i += 1) {
+      const c = text[i];
+      if (quote) { if (c === '\\') i += 1; else if (c === quote) quote = ''; } else if ("'\"`".includes(c)) quote = c; else if (c === '(') depth += 1; else if (c === ')' && !--depth) return i;
+    }
+    return text.length;
+  };
+  const bare = [];
+  for (const name of fs.readdirSync(src).filter((file) => file.endsWith('.cjs') && !macOnly.has(file))) {
+    const text = fs.readFileSync(path.join(src, name), 'utf8');
+    for (const m of text.matchAll(/(?<![\w.])(spawn|spawnSync|execFile|execFileSync)\(/g)) {
+      const call = text.slice(m.index, callEnd(text, m.index + m[0].length - 1) + 1);
+      if (!/windowsHide: true/.test(call) && !call.includes("'dbus-send'")) bare.push(`${name}: ${call.slice(0, 60)}`);
+    }
+  }
+  assert.deepEqual(bare, []);
 });
 
 test('a successful connection resets the backoff', async () => {

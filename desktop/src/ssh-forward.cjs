@@ -5,11 +5,13 @@
 // killing exactly the child this module started.
 const net = require('node:net');
 const { isSshTarget } = require('./core.cjs');
-const { SSH_OPTIONS } = require('./tailnet.cjs');
+const { SSH_OPTIONS, isTailnetHost, isServeName } = require('./tailnet.cjs');
 
 const BACKOFF_MAX_MS = 30000, UP_POLL_MS = 250, EXTERNAL_RECHECK_MS = 30000;
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '[::1]']);
 const bindOf = (host) => host === '[::1]' ? '[::1]' : '127.0.0.1';
+
+const onTailnet = (host) => isTailnetHost(host) || isServeName(String(host).replace(/^[^@]*@/, '').toLowerCase());
 
 const probeTcp = (port, bind) => new Promise((resolve) => {
   const socket = net.connect({ port, host: bind.replace(/^\[|\]$/g, '') });
@@ -20,10 +22,16 @@ const probeTcp = (port, bind) => new Promise((resolve) => {
 });
 
 // First stderr line that says something, with no control characters.
-const reasonOf = (text) => String(text).split('\n').map((line) => line.replace(/[\x00-\x1f\x7f]/g, ' ').trim()).find((line) => line && !/^Warning:/i.test(line))?.slice(0, 160) || '';
+const reasonOf = (text) => String(text).split('\n').map((line) => line.replace(/[\x00-\x1f\x7f]/g, ' ').trim()).find((line) => line && !/^Warning:/i.test(line) && !/^@+$/.test(line))?.slice(0, 160) || '';
 
-function createSshForward({ spawn, probe = probeTcp, isHost = isSshTarget, sshOptions = SSH_OPTIONS, timers = { set: setTimeout, clear: clearTimeout }, onChange = () => {} }) {
-  let wanted = null, child = null, timer = null, failures = 0, current = { state: 'off', reason: '' };
+// A plain sentence for the failures a person can fix, or '' to show ssh's own first line instead.
+const plainFailure = (text, code, platform) => code === 'ENOENT' ? `The ssh program was not found.${platform === 'win32' ? ' You can add OpenSSH Client under Settings > Optional features.' : ''}`
+  : /REMOTE HOST IDENTIFICATION HAS CHANGED/.test(text) ? `The server's identity has changed since last time. If that is expected, remove its old entry from known_hosts.`
+  : /Permission denied \(publickey/i.test(text) ? `The server refused this computer's SSH key. A key protected by a passphrase must be loaded in ssh-agent first.`
+  : '';
+
+function createSshForward({ spawn, platform = process.platform, probe = probeTcp, isHost = isSshTarget, sshOptions = SSH_OPTIONS, timers = { set: setTimeout, clear: clearTimeout }, onChange = () => {} }) {
+  let wanted = null, child = null, timer = null, failures = 0, tail = '', current = { state: 'off', reason: '' };
   const waiters = new Set();
   const after = (fn, ms) => { timer = timers.set(fn, ms); timer?.unref?.(); };
   const setState = (state, reason = '') => {
@@ -31,6 +39,11 @@ function createSshForward({ spawn, probe = probeTcp, isHost = isSshTarget, sshOp
     current = { state, reason };
     if (state !== 'connecting') { for (const wake of [...waiters]) wake(); }
     onChange();
+  };
+  const fail = (mine, text, code, exitCode) => {
+    const plain = plainFailure(text, code, platform), reason = plain || reasonOf(text) || `ssh stopped (${exitCode ?? 'no exit code'})`;
+    tail = plain ? `. ${plain}` : ` (${reason}). Check that ${onTailnet(mine.host) ? 'Tailscale is on and that ' : ''}your SSH key works.`;
+    setState('failed', reason);
   };
   const kill = () => { if (child && Number.isInteger(child.pid) && child.pid > 1) { try { child.kill(); } catch {} } };
 
@@ -53,15 +66,15 @@ function createSshForward({ spawn, probe = probeTcp, isHost = isSshTarget, sshOp
       if (child === proc) child = null;
       if (wanted === mine) {
         failures += 1;
-        setState('failed', spawnError || reasonOf(err) || `ssh stopped (${code ?? 'no exit code'})`);
+        fail(mine, spawnError?.message || err, spawnError?.code, code);
         after(start, Math.min(BACKOFF_MAX_MS, 1000 * 2 ** (failures - 1)));
       } else if (wanted) after(start, 0); // Replaced: start the new wish only once the old ssh has let go of its ports.
     };
-    try { proc = spawn('ssh', args, { stdio: ['ignore', 'ignore', 'pipe'] }); } catch (e) { proc = null; failures += 1; setState('failed', reasonOf(e.message)); after(start, Math.min(BACKOFF_MAX_MS, 1000 * 2 ** (failures - 1))); return; }
+    try { proc = spawn('ssh', args, { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true }); } catch (e) { proc = null; failures += 1; fail(mine, e.message, e.code); after(start, Math.min(BACKOFF_MAX_MS, 1000 * 2 ** (failures - 1))); return; }
     child = proc;
     proc.stderr?.on('data', (chunk) => { if (err.length < 2048) err += chunk; });
     proc.once('exit', (code) => finish(code));
-    proc.once('error', (e) => finish(null, reasonOf(e.message)));
+    proc.once('error', (e) => finish(null, e));
     const poll = async () => {
       const ok = await Promise.all(needed.map((t) => probe(t.port, t.bind)));
       if (child !== proc) return;
@@ -89,7 +102,7 @@ function createSshForward({ spawn, probe = probeTcp, isHost = isSshTarget, sshOp
     state: () => ({ ...current }),
     // Words for the chat, or '' when there is nothing to say.
     note: () => current.state === 'connecting' ? 'Connecting to your server…'
-      : current.state === 'failed' ? `Can't open the connection to your server (${current.reason}). Check that Tailscale is on and that your SSH key works. Workspace keeps trying.` : '',
+      : current.state === 'failed' ? `Can't open the connection to your server${tail} Workspace keeps trying.` : '',
     // Resolves once the first connection attempt has an outcome (or after ms).
     ready: (ms = 10000) => current.state !== 'connecting' ? Promise.resolve() : new Promise((resolve) => {
       const t = timers.set(resolve, ms);

@@ -55,6 +55,7 @@ const { screenshotClip } = require('./cdp.cjs');
 const { listReadExpression, cachedSnapshot, settleSnapshot, readEffect, passCloudflare, challengeProbeExpression, checkpointExpression, restoreExpression, followUpInstallExpression, lastReadOf } = require('./browser-page.cjs');
 const { createTerminals } = require('./terminal.cjs');
 const { createSignInGate } = require('./sign-in-gate.cjs');
+const { restorePlan, loadPending, savedUrl } = require('./lazy-tabs.cjs');
 const { brokerTarget, createVpsBrowser, backoffDelay, toCdpCookie, toElectronCookies, isTailnetHost, resolveSshHostname, createMirrorPusher, prepareMirrorTabs, settleWithin, checkScriptPath } = require('./vps-browser.cjs');
 const { createBrowserSessionStore } = require('./browser-session.cjs');
 const { createDownloadStore } = require('./download-store.cjs');
@@ -271,8 +272,7 @@ function readPreferences() {
 // polls) are batched. Either way nothing is written when nothing changed.
 function snapshotBrowserTabs() {
   return [...tabs.values()].filter(tab => tab.owner === 'user' && !tab.extensionPage && tab.view?.webContents && !tab.view.webContents.isDestroyed()).flatMap(tab => {
-    let url = tab.view.webContents.getURL();
-    if (tab.requestedUrl) url = tab.recoveryUrl || tab.navigationUrl || (url && url !== 'about:blank' ? url : tab.requestedUrl);
+    const url = savedUrl(tab, tab.view.webContents.getURL());
     if (!url || url === 'about:blank') return [];
     return [{ url: url === NEWTAB_URL ? 'about:blank' : url, botId: tab.botId, owner: 'user', active: tab.id === activeTabId, ...(tab.localPdf ? { localPdf: true } : {}) }];
   });
@@ -309,7 +309,7 @@ function seedMacSshHost() {
 }
 function describeTab(tab, forBot = false) {
   const wc = tab.view?.webContents;
-  const url = wc && !wc.isDestroyed() ? wc.getURL() : '';
+  const url = tab.pendingUrl || (wc && !wc.isDestroyed() ? wc.getURL() : '');
   const info = { id: tab.id, title: tab.title || 'New tab', url, internal: url === NEWTAB_URL || url === 'about:blank', owner: tab.owner, botId: tab.botId, favicon: tab.favicon || '', agentHue: botAccent(tab.botId).hue,
     controller: tab.controller, epoch: tab.epoch, loading: tab.loading, error: tab.error || '', ...(tab.recoveryUrl ? { recoveryUrl: tab.recoveryUrl } : {}), allowedBots: tab.allowedBots, agentCursor: tab.agentCursor || null, agentBusy: agentInput.isDispatching(tab), extensionPage: tab.extensionPage === true, localPdf: tab.localPdf === true, viewport: tab.viewport || null, host: HOST_LABEL, session: `shared-${HOST_LABEL}`, handoff: tab.handoff || null, handback: liveHandback(tab), takeover: tab.takeover || null };
   // While a vault fill holds a bot's tabs, what a page titles itself is not shown to that bot: a script of the page's own could put a value there.
@@ -318,7 +318,7 @@ function describeTab(tab, forBot = false) {
 }
 function pageState(tab) {
   const wc = tab.view?.webContents;
-  const url = wc && !wc.isDestroyed() ? wc.getURL() : '';
+  const url = tab.pendingUrl || (wc && !wc.isDestroyed() ? wc.getURL() : '');
   return { generation: tab.generation, url, title: vaultLock.isLocked(tab) ? '' : tab.title || 'New tab', loading: !!tab.loading };
 }
 // Action replies repeat on every call, so the tab record keeps only what the
@@ -671,6 +671,8 @@ function backgroundHost(width = 900, height = 700) {
 }
 function applyLayout() {
   const shown = shownTabId();
+  const shownTab = tabs.get(shown);
+  if (shownTab) loadPendingTab(shownTab);
   if (extensionPopup && extensionPopupTabId !== shown) extensionPopup.destroy();
   const active = tabs.get(shown)?.view.webContents;
   if (active && active.id !== extensionActiveContentsId) { extensionActiveContentsId = active.id; extensionHost?.selectTab(active); }
@@ -1053,10 +1055,11 @@ async function resolveFavicon(tab, favicons) {
 // page. All explicit reload entrypoints use the retained destination. Load
 // failures remain visible through the tab's did-fail-load state.
 function reloadBrowserPage(tab) {
+  if (tab.pendingUrl) return loadPendingTab(tab);
   if (tab.error && tab.recoveryUrl) return tab.view.webContents.loadURL(tab.recoveryUrl).catch(() => {});
   return tab.view.webContents.reload();
 }
-function createTab({ url = 'about:blank', filePath = '', openerId = '', botId = prefs.selectedBotId || 'shared', controller = 'human', owner = controller === 'agent' ? 'bot' : 'user', options, skipLoad = false, activate = true, extensionPage = false, localPdf = false } = {}) {
+function createTab({ url = 'about:blank', filePath = '', openerId = '', botId = prefs.selectedBotId || 'shared', controller = 'human', owner = controller === 'agent' ? 'bot' : 'user', options, skipLoad = false, defer = false, activate = true, extensionPage = false, localPdf = false } = {}) {
   if (tabs.size >= 40) throw new Error('Close a tab before opening another.');
   if (filePath) {
     filePath = pdfFile(filePath);
@@ -1072,7 +1075,7 @@ function createTab({ url = 'about:blank', filePath = '', openerId = '', botId = 
     webPreferences: { ...options?.webPreferences, preload: undefined, partition: 'persist:browser', contextIsolation: true, nodeIntegration: false, sandbox: true,
       webSecurity: true, navigateOnDragDrop: false, plugins: true, backgroundThrottling: false } });
   view.setBackgroundColor('#0b0b0c');
-  const tab = { id: crypto.randomUUID(), openerId, view, requestedUrl: skipLoad ? '' : targetUrl, owner, botId: String(botId).slice(0, 100), controller, extensionPage, localPdf, epoch: 1, title: filePath ? path.basename(filePath) : 'New tab', loading: false, allowedBots: [], refs: new Set(), generation: 0, queue: Promise.resolve() };
+  const tab = { id: crypto.randomUUID(), openerId, view, requestedUrl: skipLoad ? '' : targetUrl, ...(defer && !skipLoad ? { pendingUrl: targetUrl } : {}), owner, botId: String(botId).slice(0, 100), controller, extensionPage, localPdf, epoch: 1, title: filePath ? path.basename(filePath) : defer ? new URL(targetUrl).hostname || 'New tab' : 'New tab', loading: false, allowedBots: [], refs: new Set(), generation: 0, queue: Promise.resolve() };
   if (controller === 'agent') tab.agentSince = Date.now();
   vaultLock.watch(tab, view.webContents);
   tabs.set(tab.id, tab);
@@ -1127,6 +1130,8 @@ function createTab({ url = 'about:blank', filePath = '', openerId = '', botId = 
   view.webContents.on('did-start-loading', () => { tab.loading = true; tab.error = ''; broadcast(); });
   view.webContents.on('did-start-navigation', (_event, url, inPlace, isMainFrame) => {
     if (!isMainFrame || inPlace) return;
+    // Any navigation supersedes a restored URL still waiting to load, or showing the tab would load the old page over it.
+    tab.pendingUrl = '';
     // getURL()/reload() still name the old committed page until this commits.
     tab.navigationUrl = url; tab.recoveryUrl = ''; tab.error = ''; tab.loading = true; broadcast();
   });
@@ -1161,10 +1166,13 @@ function createTab({ url = 'about:blank', filePath = '', openerId = '', botId = 
   view.webContents.on('destroyed', () => { if (!isQuitting && tabs.has(tab.id) && !tab.host?.isDestroyed()) closeTab(tab.id); });
   if (activate) { prefs.remoteControl = false; activeTabId = tab.id; canvasTab = 'browser'; }
   applyLayout(); broadcast();
-  if (!skipLoad) signInGate.load(view.webContents, targetUrl, { alive: () => tabs.has(tab.id) });
+  if (!skipLoad && !defer) signInGate.load(view.webContents, targetUrl, { alive: () => tabs.has(tab.id) });
   savePreferencesSoon();
   return tab;
 }
+// Showing a waiting tab, or an agent addressing it, is what loads it. Resolves once the load has settled.
+const loadPendingTab = tab => loadPending(tab, url => signInGate.load(tab.view.webContents, url, { alive: () => tabs.has(tab.id) }));
+const PENDING_LOAD_WAIT_MS = 15000;
 function closeTab(id) {
   if (id === 'home' || id === 'vps') { prefs.remoteControl=false; activeTabId = 'home'; canvasTab = 'browser'; applyLayout(); broadcast(); return; }
   const tab = tabs.get(id);
@@ -1670,7 +1678,7 @@ const webappSignIn = createWebappSignIn({ safeStorage, getPreferences: () => pre
 // Every page load that needs restored sign-ins (persist:browser, persist:telegram) goes through signInGate; the window does not.
 const signInGate = createSignInGate({ settleWithin, capMs: BROWSER_RESTORE_WAIT_MS, onError: () => logError('browser-restore', new Error('Saved browser sign-ins could not be restored.')),
   onTaskError: error => logError('sign-in-gate', error), isQuitting: () => isQuitting });
-const browserSessionStore = createBrowserSessionStore({ WebContentsView, safeStorage, getPreferences: () => prefs, savePreferences: () => persistSettingsPreferences(prefs), mark: bootTimer.mark });
+const browserSessionStore = createBrowserSessionStore({ WebContentsView, safeStorage, getPreferences: () => prefs, savePreferences: () => persistSettingsPreferences(prefs), mark: bootTimer.mark, log: message => mainLog().write('browser-session', message) });
 async function saveBrowserSession() {
   savePreferences();
   await Promise.all(['persist:browser', 'persist:telegram', ...(webappView || canvasView ? [WEBAPP_PARTITION] : [])].map(async partition => {
@@ -1915,7 +1923,7 @@ function sshRun(host, remote, { timeoutMs = 15000 } = {}) {
 function sshWrite(host, remotePath, content, { timeoutMs = 15000 } = {}) {
   if (!isSshTarget(host)) return Promise.resolve({ code: -1, out: '', err: 'Use a literal Tailscale IP address.' });
   return new Promise((resolve) => {
-    const child = spawn('ssh', [...TAILNET_SSH_OPTIONS, '-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=accept-new', host, require('./env-write.cjs').command], { timeout: timeoutMs });
+    const child = spawn('ssh', [...TAILNET_SSH_OPTIONS, '-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=accept-new', host, require('./env-write.cjs').command], { timeout: timeoutMs, windowsHide: true });
     let out = '', err = '';
     child.stdout.on('data', (chunk) => { out = (out + chunk).slice(-20000); });
     child.stderr.on('data', (chunk) => { err = (err + chunk).slice(-20000); });
@@ -1947,7 +1955,7 @@ function testAgentPath() {
   if (!isSshTarget(mac)) throw new Error('The saved SSH address for this computer is invalid. Re-enter it as user@Tailscale-IP.');
   return new Promise((resolve) => {
     const child = spawn('ssh', [...TAILNET_SSH_OPTIONS, '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=accept-new', host,
-      `ssh ${TAILNET_SSH_OPTIONS.join(' ')} -o BatchMode=yes -o ConnectTimeout=6 -o StrictHostKeyChecking=accept-new ${cloudMigrate.shellQuote(mac)} 'echo AGENT_PATH_OK'`], { timeout: 30000 });
+      `ssh ${TAILNET_SSH_OPTIONS.join(' ')} -o BatchMode=yes -o ConnectTimeout=6 -o StrictHostKeyChecking=accept-new ${cloudMigrate.shellQuote(mac)} 'echo AGENT_PATH_OK'`], { timeout: 30000, windowsHide: true });
     let out = '';
     child.stdout.on('data', chunk => { out += chunk; });
     child.stderr.on('data', chunk => { out += chunk; });
@@ -2269,7 +2277,7 @@ function registerIpc() {
       }
       case 'navigate': {
         if (isVpsTab(value.id)) { await navigateVps(value.id,value.url); break; }
-        const tab = tabs.get(value.id); if (tab) { changeController(tab.id, 'human'); const target = pageUrl(value.url); tab.requestedUrl = target; await signInGate.load(tab.view.webContents, target, { alive: () => tabs.has(tab.id) }); } break;
+        const tab = tabs.get(value.id); if (tab) { changeController(tab.id, 'human'); const target = pageUrl(value.url); tab.requestedUrl = target; tab.pendingUrl = ''; await signInGate.load(tab.view.webContents, target, { alive: () => tabs.has(tab.id) }); } break;
       }
       case 'history': {
         if (isVpsTab(value.id)) { await remoteRequest(value.id,'control',{controller:'human'}); await remoteRequest(value.id,'human-actions',{action:value.action}); break; }
@@ -2814,7 +2822,7 @@ function registerIpc() {
         return new Promise((resolve) => {
           // The migrate script runs in a hidden shell; each chunk is relayed to
           // the wizard log so the run is visible without a terminal.
-          const child = spawn('bash', ['-lc', cloudMigrate.migrateCommand(host)]);
+          const child = spawn('bash', ['-lc', cloudMigrate.migrateCommand(host)], { windowsHide: true });
           let out = '';
           const feed = (chunk) => {
             out = (out + chunk).slice(-60000);
@@ -2888,7 +2896,7 @@ function registerIpc() {
         // while the remote waits, and cloud-model-check polls for the result.
         if (!isSshTarget(host)) throw new Error('Use a literal Tailscale IP address.');
         if (!modelAuthChild) {
-          modelAuthChild = spawn('ssh', [...TAILNET_SSH_OPTIONS, '-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=accept-new', host, posixCommand(cloudModel.authLoginCommand())]);
+          modelAuthChild = spawn('ssh', [...TAILNET_SSH_OPTIONS, '-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=accept-new', host, posixCommand(cloudModel.authLoginCommand())], { windowsHide: true });
           let seen = '', opened = false;
           const feed = (chunk) => {
             seen = (seen + chunk).slice(-20000);
@@ -3096,7 +3104,7 @@ async function handoffTab({id,destination,includeDrafts=false,note=''}) {
   const wasController=source.controller;
   let target,result,checkpoint,handoff,signIns=0;
   try {
-    if(sourceHost==='mac') { changeController(id,'human'); await source.queue; }
+    if(sourceHost==='mac') { await settleWithin(loadPendingTab(source),PENDING_LOAD_WAIT_MS); changeController(id,'human'); await source.queue; }
     else await remoteRequest(id,'control',{controller:'human'});
     // Sign-in cookies for the page's own URL ride along (see signInsTravel);
     // site storage, page memory and passwords never do.
@@ -3629,6 +3637,7 @@ function startApi() {
       // Shared tabs are claimable by any known bot via POST control; the
       // per-endpoint gates still fence reads/actions until it is claimed.
       requireActor(tab, botId, undefined, false, overseer || (tab.botId === 'shared' && prefs.bots.some((bot) => bot.id === botId)));
+      await settleWithin(loadPendingTab(tab), PENDING_LOAD_WAIT_MS);
       if (req.method === 'GET' && !match[2]) return send(200, describeTab(tab, true));
       tab.lastAgentActivity = Date.now();
       // A bounded backlog of pending reads per tab: a bot cannot stack up
@@ -3881,12 +3890,11 @@ function restoreBrowserTabs() {
   const legacy = prefs.savedTabs.filter(item => !item.owner && item.botId && item.botId !== 'shared');
   if (legacy.length) prefs.legacySavedTabs = [...(Array.isArray(prefs.legacySavedTabs) ? prefs.legacySavedTabs : []), ...legacy];
   const saved = prefs.savedTabs.filter(item => item.owner === 'user' || (!item.owner && (!item.botId || item.botId === 'shared')));
-  for (const item of saved.slice(0, 40)) {
-    if (!item.url || (item.url === 'about:blank' && item.owner !== 'user')) continue;
+  for (const { item, defer } of restorePlan(saved)) {
     try {
       const tab = /^file:\/\//i.test(item.url)
         ? createTab({ filePath: fileURLToPath(item.url), botId: item.botId, activate: false })
-        : createTab({ url: item.url, botId: item.botId, localPdf: item.localPdf === true, activate: false });
+        : createTab({ url: item.url, botId: item.botId, localPdf: item.localPdf === true, defer, activate: false });
       if (item.active === true) activeTabId = tab.id;
     } catch {}
   }

@@ -184,7 +184,7 @@ function parseTailscaleSshHost(out, username) {
 }
 function tailscaleSshHost({ platform = process.platform, programFiles = process.env.ProgramFiles, username = '', run, exists = fs.existsSync } = {}) {
   if (!username) return '';
-  const invoke = run || ((file, args) => execFileSync(file, args, { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] }));
+  const invoke = run || ((file, args) => execFileSync(file, args, { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }));
   for (const cli of tailscaleCandidates(platform, programFiles)) {
     if ((cli.includes('/') || cli.includes('\\')) && !exists(cli)) continue;
     let out;
@@ -197,7 +197,7 @@ function tailscaleSshHost({ platform = process.platform, programFiles = process.
 async function tailscaleSshHostAsync({ platform = process.platform, programFiles = process.env.ProgramFiles, username = '', run, exists = fs.existsSync } = {}) {
   if (!username) return '';
   const invoke = run || ((file, args) => new Promise((resolve, reject) => {
-    execFile(file, args, { encoding: 'utf8', timeout: 3000 }, (error, stdout) => error ? reject(error) : resolve(stdout));
+    execFile(file, args, { encoding: 'utf8', timeout: 3000, windowsHide: true }, (error, stdout) => error ? reject(error) : resolve(stdout));
   }));
   for (const cli of tailscaleCandidates(platform, programFiles)) {
     if ((cli.includes('/') || cli.includes('\\')) && !exists(cli)) continue;

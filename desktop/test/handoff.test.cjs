@@ -20,6 +20,7 @@ function fixture({ activationFails = false, retirementFails = false, remote = fa
   const context = vm.createContext({
     tabs: new Map(remote ? [] : [[source.id, source]]), vpsTabs: new Map(remote ? [[source.id, source]] : []), prefs: { handoffs: [] }, HOST_LABEL: 'mac',
     boundedJs, vaultLock: { isLocked: () => false },
+    settleWithin: promise => promise, loadPendingTab: async () => {}, PENDING_LOAD_WAIT_MS: 0,
     signInsTravel: async () => false, crypto: { randomUUID: () => `move-${created}` }, checkpointExpression() {},
     changeController: (_id, controller) => { source.controller = controller; },
     vpsBrowser: { request: async (route, method) => {
