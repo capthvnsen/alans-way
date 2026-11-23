@@ -1777,7 +1777,9 @@ function mountChatSurface(body) {
   };
   signOut.onclick = () => runSettingsAction(signOut, signInStatus, () => api.command('webapp-sign-out'), 'Signing out…', 'Signed out. The saved password is gone from this computer.');
   const status = element('p', 'connection-state'); status.id = 'settings-webapp-status'; body.append(status);
-  body.append(element('p', 'settings-note', 'On your Hermes server, run scripts/webapp-signin.sh from alans-way as the user that runs Hermes. It prints the address to enter here and writes the username and password to webapp-signin.txt on the server, never to the screen.'));
+  const signInNote = element('p', 'settings-note', 'On your Hermes server, run scripts/webapp-signin.sh from alans-way as the user that runs Hermes. It prints the address to enter here and writes the username and password to webapp-signin.txt on the server, never to the screen.');
+  const linkNote = element('p', 'settings-note', 'This server opens with a one-use link that Workspace fetches over SSH, so no username or password is needed.'); linkNote.id = 'settings-webapp-link-note';
+  body.append(signInNote, linkNote);
   body.append(element('h4', 'settings-subheading', 'Alan’s native chat'));
   const nativeAddress = settingsField(body, 'settings-native-url', 'Address', state.nativeChat?.address, 'http://127.0.0.1:8642'); nativeAddress.setAttribute('aria-label', 'Native chat address');
   const nativeKey = settingsField(body, 'settings-native-key', 'API key', '', ''); nativeKey.type = 'password';
@@ -1825,6 +1827,8 @@ function mountChatSurface(body) {
       button.textContent = firstRun && !button.hidden ? 'Import saved key and connect' : `Import saved key from ~/.config/alans-way/${button.dataset.name}-api-key`;
     }
     nativeImport.hidden = !files.length;
+    for (const node of [username.parentElement, password.parentElement, signIn, signOut, signInStatus, signInNote]) node.hidden = !!state.webappPrivate;
+    linkNote.hidden = !state.webappPrivate;
     status.textContent = state.webappStatus === 'unconfigured' ? 'Not set up. Enter the address of your Hermes server above.' : webappStatusText();
     if (document.activeElement !== ttl) ttl.value = state.promptCacheTtl;
     compact();
@@ -2292,25 +2296,36 @@ async function hermesCommand(name, value = {}) {
   catch (error) { toast(window.HermesView.commandErrorMessage(error)); return null; }
 }
 const WEBAPP_HOST_CHECK = 'On the Hermes host, run: hermes webapp --status. It says whether webapp.enabled is on, whether sign-in is set up and whether the bundle is built.';
+let webappLinkDraft = '';
 function webappStatusText() {
   const url = state.hermesWebappUrl;
   return { unconfigured: 'Hermes Desktop has no address yet. Add it in Settings under Chat surface.',
     checking: `Checking ${url}…`, reachable: `Opening ${url}…`, unreachable: `${state.tunnelNote || `Can't reach ${url}.`} ${WEBAPP_HOST_CHECK}`,
-    'needs-link': 'This Hermes has no sign-in, so it opens only with a one-use link. On the Hermes host, run hermes webapp --no-open and paste the link in the chat pane within 60 seconds. You need a new link each time Workspace restarts.',
+    'needs-link': state.webappLinkTrying ? `Opening ${url}…` : `${state.webappLinkStale ? 'That link was already used or has expired. Get a new one. ' : state.webappLinkFailure ? `Workspace couldn't fetch the link itself: ${state.webappLinkFailure}. ` : ''}This Hermes has no sign-in, so it opens only with a one-use link. On the Hermes host, run hermes webapp --no-open and paste the link in the chat pane within 60 seconds. You need a new link each time Workspace restarts.`,
     'sign-in': state.webappSignInError || (state.webappSignIn ? `Signing in as ${state.webappSignIn}…` : 'Sign in inside the chat pane, or save the username and password from webapp-signin.txt in Settings under Chat surface so Workspace signs in for you.'),
-    ready: state.webappSignIn ? `Connected and signed in as ${state.webappSignIn}.` : 'Connected and signed in.' }[state.webappStatus] || '';
+    ready: state.webappSignIn && !state.webappPrivate ? `Connected and signed in as ${state.webappSignIn}.` : 'Connected and signed in.' }[state.webappStatus] || '';
 }
 function renderWebappHelp() {
-  const help = $('webapp-help'), key = JSON.stringify([state.webappStatus, state.hermesWebappUrl, state.webappSignIn, state.webappSignInError]);
+  const help = $('webapp-help'), key = JSON.stringify([state.webappStatus, state.hermesWebappUrl, state.webappSignIn, state.webappSignInError, state.webappLinkTrying, state.webappLinkFailure, state.webappLinkStale]);
   if (help.dataset.key === key) return;
   help.dataset.key = key;
   help.replaceChildren(element('h2', '', 'Hermes Desktop'), element('p', 'settings-note', webappStatusText()));
-  if (state.webappStatus === 'needs-link') {
+  if (state.webappStatus === 'needs-link' && !state.webappLinkTrying) {
     const link = element('input'); link.id = 'webapp-link'; link.autocomplete = 'off'; link.spellcheck = false;
     link.placeholder = 'http://127.0.0.1:9120/webapp/launch#ticket=…'; link.setAttribute('aria-label', 'One-use link');
-    const open = element('button', 'primary-button', 'Open'), field = element('div', 'field'); field.append(link);
-    open.onclick = () => command('webapp-link', { url: link.value }).finally(() => { link.value = ''; });
-    help.append(field, open);
+    // The pane is rebuilt when the status moves (a recheck, a failed try), so the pasted text lives outside the input.
+    link.value = webappLinkDraft; link.oninput = () => { webappLinkDraft = link.value; };
+    const open = element('button', 'primary-button', 'Open'), field = element('div', 'field'), problem = element('p', 'settings-note'); field.append(link);
+    problem.setAttribute('role', 'alert');
+    const send = async () => {
+      if (open.disabled) return;
+      open.disabled = true; problem.textContent = '';
+      try { await api.command('webapp-link', { url: link.value }); webappLinkDraft = ''; link.value = ''; }
+      catch (error) { problem.textContent = String(error?.message || error).replace(/^Error invoking remote method '[^']+': (?:Error: )?/, ''); }
+      finally { open.disabled = false; }
+    };
+    open.onclick = send; link.onkeydown = (event) => { if (event.key === 'Enter') send(); };
+    help.append(field, open, problem);
   }
   if (state.webappStatus === 'unreachable') {
     const retry = element('button', 'primary-button', 'Try again');
