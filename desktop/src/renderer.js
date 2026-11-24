@@ -160,6 +160,10 @@ function renderChatMenu() {
   const menu = $('chat-menu'), { gateways, pages, shown, unread } = chatMenu;
   if (!gateways.length && !pages) { setChatMenu(false); return; }
   if (menu.classList.contains('hidden')) return;
+  // Every state update lands here. Rebuilding identical buttons between a press and its release loses the click.
+  const signature = JSON.stringify([gateways, pages, shown, unread]);
+  if (menu.dataset.signature === signature && menu.childElementCount) return;
+  menu.dataset.signature = signature;
   const focusedItem = menu.contains(document.activeElement) ? document.activeElement : null, focusedKey = focusedItem?.dataset.gateway || focusedItem?.dataset.page;
   const item = (role, label) => { const button = element('button', 'chat-menu-item'); button.type = 'button'; button.tabIndex = -1; button.setAttribute('role', role); button.append(element('span', 'chat-menu-label', label)); return button; };
   menu.replaceChildren();

@@ -90,7 +90,7 @@ if (!process.versions.electron) {
     // The menu's entries as key, a star on the checked one, a bang on one with unread.
     const menuItems = () => run(`[...document.querySelectorAll('#chat-menu [role^=menuitem]')].map(b => (b.dataset.gateway || b.dataset.page) + (b.getAttribute('aria-checked') === 'true' ? '*' : '') + (b.querySelector('.unread') ? '!' : ''))`);
     const menu = async () => { await openMenu(); const items = await menuItems(); await closeMenu(); return items; };
-    const choose = async (key) => { await openMenu(); await run(`document.querySelector('#chat-menu [data-gateway="${key}"], #chat-menu [data-page="${key}"]').click()`); await until(menuHidden, 'menu closed'); };
+    const choose = async (key) => { await openMenu(); await run(`(() => { const item = document.querySelector('#chat-menu [data-gateway="${key}"], #chat-menu [data-page="${key}"]'); render(state); if (!item.isConnected) throw new Error('a state update rebuilt the open menu, which loses a click in progress'); item.click(); })()`); await until(menuHidden, 'menu closed'); };
     // A click on a row opens that bot on the gateway it remembers; the header menu switches gateway.
     const go = async (id, surface) => {
       if ((await state()).chatBotId !== id) { await run(`document.querySelector('${row(id)}').click()`); await until(async () => (await state()).chatBotId === id, `bot ${id}`); }
