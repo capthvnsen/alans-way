@@ -1762,7 +1762,7 @@ function mountChatSurface(body) {
   const openHermes = element('button', 'secondary-button', 'Open Hermes conversations'); openHermes.id = 'settings-open-hermes'; body.append(openHermes);
   openHermes.onclick = () => { closeModal(); command('show-hermes'); };
   body.append(element('h4', 'settings-subheading', 'Hermes Desktop'));
-  const address = settingsField(body, 'settings-webapp-url', 'Address', state.hermesWebappUrl, 'https://your-machine.your-tailnet.ts.net'); address.setAttribute('aria-label', 'Hermes Desktop address');
+  const address = settingsField(body, 'settings-webapp-url', 'Address', state.hermesWebappUrl, 'https://….ts.net or http://127.0.0.1:9120'); address.setAttribute('aria-label', 'Hermes Desktop address');
   const save = element('button', 'secondary-button', 'Save address'); body.append(save);
   const saveStatus = settingsStatus(body);
   save.onclick = async () => { const reply = await runSettingsAction(save, saveStatus, () => api.command('settings', { hermesWebappUrl: address.value }), 'Saving…', 'Address saved.'); if (reply.ok) clean(address); };
@@ -2292,10 +2292,13 @@ async function hermesCommand(name, value = {}) {
   catch (error) { toast(window.HermesView.commandErrorMessage(error)); return null; }
 }
 const WEBAPP_HOST_CHECK = 'On the Hermes host, run: hermes webapp --status. It says whether webapp.enabled is on, whether sign-in is set up and whether the bundle is built.';
+const WEBAPP_NEEDS_SSH = 'This address needs a connection to your server. Save your server’s SSH address in Settings under Agent machine.';
 function webappStatusText() {
   const url = state.hermesWebappUrl;
+  // The app opens a tunnel only when an SSH address is saved, so a loopback address without one can never connect.
+  const noTunnel = /^http:\/\/(127\.0\.0\.1|localhost)[:/]/i.test(url || '') && !state.tunnelNote && !(state.vpsBrowser?.sshHost || '').trim();
   return { unconfigured: 'Hermes Desktop has no address yet. Add it in Settings under Chat surface.',
-    checking: `Checking ${url}…`, reachable: `Opening ${url}…`, unreachable: `${state.tunnelNote || `Can't reach ${url}.`} ${WEBAPP_HOST_CHECK}`,
+    checking: `Checking ${url}…`, reachable: `Opening ${url}…`, unreachable: noTunnel ? `Can't reach ${url}. ${WEBAPP_NEEDS_SSH}` : `${state.tunnelNote || `Can't reach ${url}.`} ${WEBAPP_HOST_CHECK}`,
     'needs-link': 'This Hermes has no sign-in, so it opens only with a one-use link. On the Hermes host, run hermes webapp --no-open and paste the link in the chat pane within 60 seconds. You need a new link each time Workspace restarts.',
     'sign-in': state.webappSignInError || (state.webappSignIn ? `Signing in as ${state.webappSignIn}…` : 'Sign in inside the chat pane, or save the username and password from webapp-signin.txt in Settings under Chat surface so Workspace signs in for you.'),
     ready: state.webappSignIn ? `Connected and signed in as ${state.webappSignIn}.` : 'Connected and signed in.' }[state.webappStatus] || '';

@@ -2084,13 +2084,16 @@ async function cloudConnectOnce(diyHost, pending) {
     const remote = cloudConnect.parseComputerState((await sshRun(sshHost, cloudConnect.sshReadCommand('/var/lib/alan/state.json'))).out);
     if (!current()) return cancelled;
     if (remote?.state === 'failed') return { stage: 'failed', ok: false, detail: remote.error || 'The setup on the server failed.' };
-    const back = checkBrokerSetup();
-    if (!current()) return cancelled;
-    if (!back.ok) return { stage: 'path', ok: false, detail: back.detail };
-    if ((prefs.macSshHost || '').trim()) {
-      const path = await testAgentPath();
+    // Chatting needs neither check; both guard the browser transport, so they only gate a saved broker.
+    if ((prefs.vpsBrowser?.brokerSshHost || '').trim()) {
+      const back = checkBrokerSetup();
       if (!current()) return cancelled;
-      if (!path.ok) return { stage: 'path', ok: false, detail: path.detail };
+      if (!back.ok) return { stage: 'path', ok: false, detail: back.detail };
+      if ((prefs.macSshHost || '').trim()) {
+        const path = await testAgentPath();
+        if (!current()) return cancelled;
+        if (!path.ok) return { stage: 'path', ok: false, detail: path.detail };
+      }
     }
     delete cloud.existingModel;
     delete cloud.modelDetected;
@@ -2457,7 +2460,7 @@ function registerIpc() {
         }
         if (typeof value.hermesWebappUrl === 'string') {
           next.hermesWebappUrl = hermesWebappUrl(value.hermesWebappUrl);
-          if (!next.hermesWebappUrl && value.hermesWebappUrl.trim()) throw new Error('Enter the address as https://your-machine.your-tailnet.ts.net');
+          if (!next.hermesWebappUrl && value.hermesWebappUrl.trim()) throw new Error('Enter an https://….ts.net address, or http://127.0.0.1:9120 together with your server’s SSH address.');
         }
         if (Number.isFinite(value.chatWidth)) next.chatWidth = Math.max(320, Math.min(680, value.chatWidth));
         for (const field of Object.keys(settingsFieldRevisions)) {
