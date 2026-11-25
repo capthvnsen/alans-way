@@ -48,15 +48,6 @@ function chatOnlyTarget(value) {
   return url.href;
 }
 
-function withoutSecondarySearch(search) {
-  const params = new URLSearchParams(String(search || '').replace(/^\?/, ''));
-  const entries = [...params.entries()];
-  const kept = entries.filter(([name, value]) => !(name === 'win' && value === 'secondary'));
-  if (kept.length === entries.length) return String(search || '');
-  const next = new URLSearchParams(kept).toString();
-  return next ? `?${next}` : '';
-}
-
 // A private launch link carries the post-handoff query inside its own fragment, encoded as
 // `query`. The ticket and every other handoff parameter stay encoded in the same fragment.
 function chatOnlyLaunchFragment(fragment) {
@@ -102,14 +93,12 @@ function shouldUseChatOnly(value) {
 
 // inserted CSS does not survive a reload, and HashRouter changes do not reload: both events feed
 // the same sync. Removing first on non-chat routes keeps an in-page Settings/Cron visit readable.
-const installations = new WeakMap();
-
-function installChatOnly(contents, enabled = true) {
-  let key = '', generation = 0, active = enabled !== false;
+function installChatOnly(contents) {
+  let key = '', generation = 0;
   const remove = (cssKey) => { if (cssKey) contents.removeInsertedCSS(cssKey).catch(() => {}); };
   const sync = async () => {
     const mine = ++generation;
-    if (!active || !shouldUseChatOnly(contents.getURL())) {
+    if (!shouldUseChatOnly(contents.getURL())) {
       const old = key; key = '';
       remove(old);
       return;
@@ -120,30 +109,11 @@ function installChatOnly(contents, enabled = true) {
     const old = key; key = inserted;
     if (old !== inserted) remove(old);
   };
-  const installation = { sync, setEnabled(next) { const value = next === true; if (value === active) return; active = value; sync(); } };
-  installations.set(contents, installation);
   contents.on('did-navigate', sync);
   contents.on('did-navigate-in-page', (_event, _url, isMainFrame) => { if (isMainFrame) sync(); });
   contents.on('did-stop-loading', sync);
   contents.once('destroyed', () => { generation += 1; });
   sync();
-  return installation;
 }
 
-// The stylesheet changes in place; the secondary-window flag lives in the URL, so only that part navigates.
-function setChatOnly(contents, on) {
-  const enabled = on === true;
-  installations.get(contents)?.setEnabled(enabled);
-  let target;
-  try {
-    const url = new URL(contents.getURL());
-    const before = url.search;
-    url.search = enabled ? secondarySearch(url.search) : withoutSecondarySearch(url.search);
-    if (url.search === before) return;
-    target = url.href;
-  } catch { return; }
-  if (typeof contents.loadURL !== 'function') return;
-  try { contents.loadURL(target)?.catch(() => {}); } catch {}
-}
-
-module.exports = { CHAT_ONLY_CSS, chatOnlyLaunchFragment, chatOnlyTarget, installChatOnly, setChatOnly, shouldUseChatOnly };
+module.exports = { CHAT_ONLY_CSS, chatOnlyLaunchFragment, chatOnlyTarget, installChatOnly, shouldUseChatOnly };
