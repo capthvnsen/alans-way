@@ -33,7 +33,7 @@ Fetch https://raw.githubusercontent.com/capthvnsen/alans-way/main/docs/setup-pro
 
 Install the desktop app on the computer you want to use with your agents. Chat and real Chromium tabs share a workspace; agents have named cursors and assigned tabs, and you can take control. A remote desktop viewer lets you watch or control your VM. Telegram chat uses your existing bot conversation; other agents keep their own chat clients.
 
-- **Mac (Apple Silicon):** [download](https://openalan.com/download/mac), open the signed/notarized app, and follow setup. The installed bundle is `/Applications/alans-way-localapp.app`. Source installation: `sh scripts/install-mac.sh` from a clone of this repo.
+- **Mac (Apple Silicon):** [download](https://openalan.com/download/mac), open the signed/notarized app, and follow setup. The installed bundle is `/Applications/alans-way-localapp.app`. The `sh scripts/install-mac.sh` installer downloads the same release; developers can build from source with `ALANS_WAY_BUILD_FROM_SOURCE=1 sh scripts/install-mac.sh` from a clone of this repo.
 - **iOS:** follow [ios/README.md](ios/README.md) for Xcode builds or the [beta tester guide](docs/ios-beta-testers.md) for an invitation. This source tree does not provide a public App Store install link. Voice calls additionally need the [mobile voice bridge](mobile/README.md) on the existing Hermes gateway; normal chat and the viewer have their own setup.
 - **Existing Windows/Linux support:** [Windows download](https://openalan.com/download/windows) (unsigned; SmartScreen may require **More info → Run anyway**), or build on Linux x64 with a desktop session, systemd, Node 22.12+ and git. [Desktop guide](desktop/README.md) · [installation paths](docs/products.md#installation-paths)
 
