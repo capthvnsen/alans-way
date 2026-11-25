@@ -4,6 +4,8 @@
 // text goes through markdown-it with HTML disabled; nothing else is set as HTML.
 (() => {
   const policy = typeof module !== 'undefined' && module.exports ? require('./compact-policy.cjs') : window.CompactPolicy;
+  const gatewayList = typeof module !== 'undefined' && module.exports ? require('./gateway-list.js') : window.GatewayList;
+  const nativeChatLabel = gatewayList.NATIVE_CHAT_LABEL, nativeChatBeta = gatewayList.nativeChatBetaLabel();
   // A paragraph that is only `::name{key="value" ...}` is a widget block.
   const DIRECTIVE = /^::([a-z][\w-]{0,40})\{((?:\s*[\w-]{1,40}="[^"\n]{0,2000}")*)\s*\}$/i;
   function parseDirective(text) {
@@ -192,6 +194,7 @@
     const draftKey = () => state?.activeId || 'new';
 
     root.replaceChildren();
+    root.setAttribute('aria-label', nativeChatLabel);
     const head = el('div', 'nc-head');
     const switcher = button('nc-switch', '');
     switcher.setAttribute('aria-haspopup', 'menu');
@@ -203,7 +206,9 @@
     const newBtn = button('nc-icon nc-new', '', () => command('new'));
     newBtn.title = 'New chat'; newBtn.setAttribute('aria-label', 'New chat');
     newBtn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>';
-    head.append(switcher, newBtn, menu);
+    head.append(switcher);
+    if (nativeChatBeta) head.append(el('span', 'nc-pill', nativeChatBeta));
+    head.append(newBtn, menu);
     const notice = el('div', 'nc-notice hidden');
     notice.setAttribute('role', 'status');
     const linkBanner = el('div', 'nc-conn hidden');

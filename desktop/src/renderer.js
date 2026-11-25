@@ -38,6 +38,7 @@ function errorBadge(reason) {
   return badge;
 }
 const SURFACE_OF = { telegram: 'telegram', webapp: 'hermes-desktop', native: 'native' };
+const NATIVE_CHAT_LABEL = window.GatewayList.NATIVE_CHAT_LABEL, NATIVE_CHAT_BETA = window.GatewayList.nativeChatBetaLabel();
 // Gateway logos, each carrying its name for assistive technology where it stands alone.
 const GATEWAY_LOGOS = {
   telegram: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.6 4.3 3.7 10.8c-.8.3-.8 1.4 0 1.7l4.3 1.6 1.7 5.2c.2.7 1.1.9 1.6.4l2.4-2.3 4.4 3.2c.6.4 1.4.1 1.6-.6L22.1 5.5c.2-.9-.7-1.5-1.5-1.2ZM8 14.1 20.2 6.6"/></svg>',
@@ -1379,7 +1380,7 @@ const SETTINGS_CATEGORIES = [
 ];
 const SETTINGS_SECTIONS = [
   { id: 'keyboard', category: 'general', title: 'Keyboard shortcuts', description: 'Find the keys for moving between agents, browser tabs and dialogs.', words: 'keyboard navigation keys guide shortcuts search', mount(body) { const button = element('button', 'secondary-button', 'Keyboard shortcuts'); button.id = 'settings-shortcuts'; button.onclick = showShortcuts; body.append(button); } },
-  { id: 'chat-surface', category: 'general', title: 'Chat surface', description: 'Choose which chat an agent opens on first: Telegram, Hermes Desktop or Alan’s native chat.', words: 'telegram hermes desktop webapp chat surface tailscale address sign in compact context summarise idle cache hour minutes', mount: mountChatSurface },
+  { id: 'chat-surface', category: 'general', title: 'Chat surface', description: `Choose which chat an agent opens on first: Telegram, Hermes Desktop or ${NATIVE_CHAT_LABEL}.`, words: 'telegram hermes desktop webapp chat surface tailscale address sign in compact context summarise idle cache hour minutes', mount: mountChatSurface },
   { id: 'tab-behavior', category: 'general', title: 'Links and tab control', description: 'Choose how links from bot chats open and when bots can take back browser tabs.', words: 'automatic takeover auto open links control browser hand back', mount: mountTabBehavior },
   { id: 'bot-appearance', category: 'bots', title: 'Bot appearance', description: 'Choose a marble avatar or import an image for your selected bot.', words: 'avatars image customize appearance eyes', mount(body) { const button = element('button', 'secondary-button', 'Customize bot avatars'); button.onclick = () => openSettingsDetail(() => showAvatarEditor()); body.append(button, element('p', 'settings-note', 'Eyes follow your mouse only while Telegram reports activity.')); } },
   { id: 'primary-bot', category: 'bots', title: 'Primary bot', description: 'Pin one bot at the top of your sidebar. Without a preference, the overseer bot is used.', words: 'default primary pinned order sidebar', mount: mountPrimaryBot },
@@ -1753,9 +1754,10 @@ function openSettingsDetail(open) {
 const chatSurfaceDrafts = {};
 function mountChatSurface(body) {
   const row = element('div', 'setting-row'), surface = element('select'); surface.id = 'settings-chat-surface'; surface.setAttribute('aria-label', 'Chat surface');
-  for (const [value, label] of [['telegram', 'Telegram'], ['hermes-desktop', 'Hermes Desktop'], ['native', 'Alan’s native chat']]) { const option = element('option', '', label); option.value = value; surface.append(option); }
+  for (const [value, label] of [['telegram', 'Telegram'], ['hermes-desktop', 'Hermes Desktop'], ['native', NATIVE_CHAT_LABEL]]) { const option = element('option', '', label); option.value = value; surface.append(option); }
   row.append(element('span', '', 'Default chat surface'), surface); body.append(row);
-  body.append(element('p', 'settings-note', 'Each agent remembers the chat you last opened for it in the agent list, under Telegram, Hermes or Alan’s Way. This sets the one it opens on until you pick. Switching keeps every chat open in the background.'));
+  if (NATIVE_CHAT_BETA) body.append(element('p', 'settings-note', `${NATIVE_CHAT_BETA}: Telegram and Hermes Desktop are the stable chat surfaces.`));
+  body.append(element('p', 'settings-note', `Each agent remembers the chat you last opened for it in the agent list, under Telegram, Hermes or ${NATIVE_CHAT_LABEL}. This sets the one it opens on until you pick. Switching keeps every chat open in the background.`));
   const surfaceStatus = settingsStatus(body);
   surface.onchange = async () => { await runSettingsAction(surface, surfaceStatus, () => api.command('settings', { chatSurface: surface.value }), 'Saving…', 'Chat surface saved.'); surface.value = state.chatSurface; };
   body.append(element('h4', 'settings-subheading', 'Hermes conversations'), element('p', 'settings-note', 'Talk to a Hermes backend (hermes serve) directly. Set up the backend, start a session or resume a saved one there.'));
@@ -1778,7 +1780,7 @@ function mountChatSurface(body) {
   signOut.onclick = () => runSettingsAction(signOut, signInStatus, () => api.command('webapp-sign-out'), 'Signing out…', 'Signed out. The saved password is gone from this computer.');
   const status = element('p', 'connection-state'); status.id = 'settings-webapp-status'; body.append(status);
   body.append(element('p', 'settings-note', 'On your Hermes server, run scripts/webapp-signin.sh from alans-way as the user that runs Hermes. It prints the address to enter here and writes the username and password to webapp-signin.txt on the server, never to the screen.'));
-  body.append(element('h4', 'settings-subheading', 'Alan’s native chat'));
+  body.append(element('h4', 'settings-subheading', NATIVE_CHAT_LABEL));
   const nativeAddress = settingsField(body, 'settings-native-url', 'Address', state.nativeChat?.address, 'http://127.0.0.1:8642'); nativeAddress.setAttribute('aria-label', 'Native chat address');
   const nativeKey = settingsField(body, 'settings-native-key', 'API key', '', ''); nativeKey.type = 'password';
   const clean = (field) => { delete field.dataset.dirty; delete chatSurfaceDrafts[field.id]; };
@@ -1800,7 +1802,7 @@ function mountChatSurface(body) {
   };
   body.append(element('p', 'settings-note', "It talks to the Hermes API server (API_SERVER_ENABLED=true and API_SERVER_KEY in the profile's .env). Use http://127.0.0.1:8642 through an SSH tunnel, or the https address Tailscale Serve gives port 8642."));
   const compact = settingsToggle(body, 'settings-native-compact', 'Compact long or idle chats before sending', 'compactBeforeSend');
-  body.append(element('p', 'settings-note', 'When a conversation is nearly full, or has been idle long enough that Hermes has forgotten its cached context, Alan’s native chat asks Hermes to summarise it first. You can turn that off for one message from the note above the message box.'));
+  body.append(element('p', 'settings-note', `When a conversation is nearly full, or has been idle long enough that Hermes has forgotten its cached context, ${NATIVE_CHAT_LABEL} asks Hermes to summarise it first. You can turn that off for one message from the note above the message box.`));
   const ttlRow = element('div', 'setting-row'), ttl = element('select'); ttl.id = 'settings-native-cache-ttl'; ttl.setAttribute('aria-label', 'Treat a chat as idle after');
   for (const [value, label] of [['5m', '5 minutes (Hermes default)'], ['1h', '1 hour']]) { const option = element('option', '', label); option.value = value; ttl.append(option); }
   ttlRow.append(element('span', '', 'Treat a chat as idle after'), ttl); body.append(ttlRow);

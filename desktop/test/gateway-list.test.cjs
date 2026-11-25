@@ -4,16 +4,18 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const Avatars = require('../src/avatars.js');
-const { GATEWAYS, labelOf, botRows, unreadLabel, createUnreadOrder, previewOrder } = require('../src/gateway-list.js');
+const { GATEWAYS, NATIVE_CHAT_LABEL, nativeChatBetaLabel, labelOf, botRows, unreadLabel, createUnreadOrder, previewOrder } = require('../src/gateway-list.js');
 
 const alan = { id: '1', name: 'Alan', username: 'alan_bot' };
 const mira = { id: '2', name: 'Mira', username: 'mira_bot' };
 const scout = { id: '3', name: 'Scout', username: 'scout_bot' };
 const shape = (result) => result.rows.map((row) => [row.bot.id, row.gateways]);
 
-test('gateways come in a fixed order: Telegram, Hermes, Alan’s Way', () => {
-  assert.deepEqual(GATEWAYS.map((gateway) => [gateway.id, gateway.label]), [['telegram', 'Telegram'], ['hermes-desktop', 'Hermes'], ['native', 'Alan\'s Way']]);
-  assert.equal(labelOf('native'), 'Alan\'s Way');
+test('gateways come in a fixed order: Telegram, Hermes, native chat', () => {
+  assert.equal(NATIVE_CHAT_LABEL, 'Alan’s native chat (beta)');
+  assert.equal(nativeChatBetaLabel(), 'Beta');
+  assert.deepEqual(GATEWAYS.map((gateway) => [gateway.id, gateway.label]), [['telegram', 'Telegram'], ['hermes-desktop', 'Hermes'], ['native', NATIVE_CHAT_LABEL]]);
+  assert.equal(labelOf('native'), NATIVE_CHAT_LABEL);
   assert.deepEqual(shape(botRows({ bots: [alan], gateways: { 1: ['native', 'telegram', 'hermes-desktop'] } })), [['1', ['telegram', 'hermes-desktop', 'native']]]);
 });
 
@@ -55,7 +57,7 @@ test('the unread text names each gateway, for screen readers', () => {
   assert.equal(unreadLabel([]), '');
   assert.equal(unreadLabel(['telegram']), 'Unread in Telegram');
   assert.equal(unreadLabel(['telegram', 'hermes-desktop']), 'Unread in Telegram and Hermes');
-  assert.equal(unreadLabel(['telegram', 'hermes-desktop', 'native']), 'Unread in Telegram, Hermes and Alan\'s Way');
+  assert.equal(unreadLabel(['telegram', 'hermes-desktop', 'native']), 'Unread in Telegram, Hermes and Alan’s native chat (beta)');
 });
 
 test('unread chips stack oldest first, so the gateway that became unread last is on top', () => {
