@@ -28,6 +28,29 @@ app.whenReady().then(async () => {
     document.getElementById('home').classList.add('hidden');
     renderOnboarding(true);
   `);
+  const firstStep = await win.webContents.executeJavaScript(`(async () => {
+    const calls = [];
+    window.workspace.command = async (name, value) => { calls.push({ name, value }); };
+    renderOnboarding(false);
+    onboardingStep = 1;
+    state.cloud = {};
+    renderOnboarding(true);
+    const panel = document.getElementById('onboarding');
+    const find = text => [...panel.querySelectorAll('button')].find(button => button.textContent === text);
+    const guide = find('Read the setup steps'), own = find('Use my own server'), paste = find('Paste a claim code');
+    if (!guide || !own || !paste) return { found: false, text: panel.textContent };
+    await guide.onclick();
+    await own.onclick();
+    await paste.onclick();
+    return { found: true, text: panel.textContent, calls, focus: document.activeElement.id };
+  })()`);
+  assert.equal(firstStep.found, true, `step 1 prerequisite actions missing: ${firstStep.text}`);
+  assert.match(firstStep.text, /Before you start/);
+  assert.match(firstStep.text, /Your own Hermes server: a computer already running Hermes that you can reach over SSH or Tailscale\./);
+  assert.match(firstStep.text, /A claim code from openalan\.com for a hosted bot\./);
+  assert.deepEqual(firstStep.calls, [{ name: 'open-setup-guide', value: {} }, { name: 'cloud-diy', value: {} }]);
+  assert.equal(firstStep.focus, 'ob-claim-code');
+  console.log('PASS: wizard step 1 prerequisites link to setup and the existing server and claim paths');
   for (const [width, chatWidth, hideBots] of [[1024, 490, false], [1024, 680, false], [900, 680, false], [1024, 680, true]]) {
     const size = await resizeWindow(win, width, 640);
     await win.webContents.executeJavaScript(`
