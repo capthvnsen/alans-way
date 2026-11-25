@@ -20,6 +20,7 @@ const { createAvatarStore, AVATAR_SCHEME } = require('./avatar-store.cjs');
 const { sameOriginWindow, queueWithDeadline, resolveChatSurface, usableSurfaces, surfaceForBot, inboxRow, canvasStripTabs, keepBots, writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange, tailscaleSshHost, tailscaleSshHostAsync, createPointerFeed } = require('./shell-support.cjs');
 const { buildAgentPrompt } = require('./agent-prompt.cjs');
 const { shouldOnboard, pinOnboarding, cloudStep, nextCloudStep, setCloudStep } = require('./onboarding.cjs');
+const { ONBOARDING_SETUP_GUIDE_URL } = require('./onboarding-copy.cjs');
 const cloudClaim = require('./cloud-claim.cjs');
 const cloudStatus = require('./cloud-status.cjs');
 const cloudConnect = require('./cloud-connect.cjs');
@@ -2686,6 +2687,7 @@ function registerIpc() {
       }
       case 'open-download-page': shell.openExternal(`https://openalan.com/download/${HOST_LABEL === 'windows' ? 'windows' : 'mac'}`); break;
       case 'open-release-notes': shell.openExternal(`https://github.com/capthvnsen/alans-way/releases/tag/${app.getVersion().includes('-nightly.') ? `nightly-${app.getVersion().split('-nightly.')[1]}` : `v${app.getVersion()}`}`); break;
+      case 'open-setup-guide': await shell.openExternal(ONBOARDING_SETUP_GUIDE_URL); break;
       case 'dismiss-bundle-warning': bundleWarningDismissed = true; broadcast(); break;
       case 'dismiss-updated': update.justUpdatedFrom = ''; break;
       case 'onboarding-done': prefs.onboarded = true; savePreferences(); break;

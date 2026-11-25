@@ -769,6 +769,21 @@ function renderOnboarding(show) {
   card.append(element('p', 'onboarding-step', `Step ${onboardingStep} of 3`));
   if (onboardingStep === 1) {
     card.append(element('h2', '', 'Welcome to Alan’s Workspace'), element('p', 'settings-note', 'Three short steps connect your Hermes agent to this computer.'));
+    const copy = ONBOARDING_PREREQUISITES;
+    let claimInput;
+    const prerequisites = element('div', 'checklist');
+    const title = element('p', 'settings-note'); title.append(element('strong', '', copy.title));
+    prerequisites.append(title, element('p', 'settings-note', copy.intro));
+    const serverLine = element('p', 'check-item');
+    serverLine.append(document.createTextNode(`${copy.server} `),
+      button(copy.serverGuide, 'link-button', () => command('open-setup-guide')),
+      document.createTextNode(' · '),
+      button(copy.serverPath, 'link-button', () => command('cloud-diy')));
+    const claimLine = element('p', 'check-item');
+    claimLine.append(document.createTextNode(`${copy.claim} `),
+      button(copy.claimPath, 'link-button', () => claimInput.focus()));
+    prerequisites.append(serverLine, claimLine);
+    card.append(prerequisites);
     // A failed deep-link claim lands here: explain it instead of showing a
     // silent ordinary wizard.
     if (cloud.error) card.append(element('p', 'settings-note', cloud.error));
@@ -782,7 +797,7 @@ function renderOnboarding(show) {
     }
     const claimWrap = element('div', 'field'), claimLabel = element('label', '', 'Have a claim code from openalan.com?');
     claimLabel.htmlFor = 'ob-claim-code';
-    const claimInput = element('input');
+    claimInput = element('input');
     claimInput.id = 'ob-claim-code'; claimInput.placeholder = 'Paste your claim code or link'; claimInput.autocomplete = 'off';
     const claimButton = button('Claim computer', 'secondary-button', async () => {
       claimButton.disabled = true;
@@ -791,7 +806,6 @@ function renderOnboarding(show) {
     });
     claimWrap.append(claimLabel, claimInput, claimButton);
     card.append(claimWrap);
-    card.append(button('Use my own server', 'link-button', () => command('cloud-diy')));
     actions.append(button('Skip setup', 'secondary-button', finish), button('Next', 'primary-button', () => go(2)));
   } else if (onboardingStep === 2) {
     card.append(element('h2', '', 'Give your agent this prompt'));
