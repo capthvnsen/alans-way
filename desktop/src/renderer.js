@@ -155,29 +155,42 @@ function renderBotActivity(row, bot) {
   open.setAttribute('aria-label', `${open.dataset.label}${working ? ', working' : ''}`);
   open.title = working ? bot.activity.label || '' : '';
 }
-// The chat header's menu: which of this bot's gateways to show (a check beside the one on screen), then its Hermes Desktop pages.
+// The chat header's menu: which of this bot's gateways to show (a check beside the one on screen), its Hermes
+// Desktop sidebar preference while that surface is up, then its Hermes Desktop pages.
+const chatMenuKey = (item) => item?.dataset.gateway || item?.dataset.page || (item?.dataset.sidebar ? 'sidebar' : '');
 function renderChatMenu() {
-  const menu = $('chat-menu'), { gateways, pages, shown, unread } = chatMenu;
-  if (!gateways.length && !pages) { setChatMenu(false); return; }
+  const menu = $('chat-menu'), { gateways, pages, shown, unread, sidebar } = chatMenu;
+  if (!gateways.length && !pages && !sidebar) { setChatMenu(false); return; }
   if (menu.classList.contains('hidden')) return;
-  const focusedItem = menu.contains(document.activeElement) ? document.activeElement : null, focusedKey = focusedItem?.dataset.gateway || focusedItem?.dataset.page;
+  // Every state update lands here. Rebuilding identical buttons between a press and its release loses the click.
+  const signature = JSON.stringify([gateways, pages, shown, unread, sidebar, state?.showHermesSidebar === true]);
+  if (menu.dataset.signature === signature && menu.childElementCount) return;
+  menu.dataset.signature = signature;
+  const focusedItem = menu.contains(document.activeElement) ? document.activeElement : null, focusedKey = chatMenuKey(focusedItem);
   const item = (role, label) => { const button = element('button', 'chat-menu-item'); button.type = 'button'; button.tabIndex = -1; button.setAttribute('role', role); button.append(element('span', 'chat-menu-label', label)); return button; };
+  const check = (button) => { const mark = element('span', 'chat-menu-check', '✓'); mark.setAttribute('aria-hidden', 'true'); button.append(mark); };
   menu.replaceChildren();
   for (const id of gateways) {
     const button = item('menuitemradio', window.GatewayList.labelOf(id)), logo = element('span', 'gateway-logo');
     button.dataset.gateway = id; button.setAttribute('aria-checked', String(id === shown));
     logo.innerHTML = GATEWAY_LOGOS[id]; button.prepend(logo);
     if (unread.includes(id)) button.append(element('span', 'unread'), element('span', 'sr-only', ', unread'));
-    const check = element('span', 'chat-menu-check', '✓'); check.setAttribute('aria-hidden', 'true'); button.append(check);
+    check(button);
     menu.append(button);
   }
-  if (gateways.length && pages) { const rule = element('div', 'chat-menu-rule'); rule.setAttribute('role', 'separator'); menu.append(rule); }
+  if (sidebar) {
+    const button = item('menuitemcheckbox', 'Show Hermes sidebar');
+    button.dataset.sidebar = '1'; button.setAttribute('aria-checked', String(state?.showHermesSidebar === true));
+    check(button);
+    menu.append(button);
+  }
+  if ((gateways.length || sidebar) && pages) { const rule = element('div', 'chat-menu-rule'); rule.setAttribute('role', 'separator'); menu.append(rule); }
   if (pages) for (const [page, label] of [['settings', 'Bot settings'], ['cron', 'Cron jobs']]) { const button = item('menuitem', label); button.dataset.page = page; menu.append(button); }
-  if (focusedKey) [...menu.children].find(child => (child.dataset.gateway || child.dataset.page) === focusedKey)?.focus({ preventScroll: true });
+  if (focusedKey) [...menu.children].find(child => chatMenuKey(child) === focusedKey)?.focus({ preventScroll: true });
 }
 function setChatMenu(open, focus = 'checked') {
   const menu = $('chat-menu'), was = !menu.classList.contains('hidden');
-  if (open && !chatMenu.gateways.length && !chatMenu.pages) open = false;
+  if (open && !chatMenu.gateways.length && !chatMenu.pages && !chatMenu.sidebar) open = false;
   menu.classList.toggle('hidden', !open); $('chat-name').classList.toggle('active', open);
   if ($('chat-name').getAttribute('aria-haspopup')) $('chat-name').setAttribute('aria-expanded', String(open));
   if (open) {
@@ -478,11 +491,11 @@ function render(next) {
   const chatName = bot?.name || (state.chatBotId === 'hermes' ? state.hermesBot?.name : '');
   $('chat-title').textContent = hermesActive ? (hermesSelected?.title || `Hermes${state.hermes?.target ? ` · ${state.hermes.target.label}` : ''}`)
     : chatName || (webappActive ? 'Hermes Desktop' : nativeActive ? 'Alan' : 'Telegram');
-  // The name opens a menu: this bot's gateways when it has several, then its Hermes Desktop pages (Bot settings, Cron jobs). With neither it is plain text.
+  // The name opens a menu: this bot's gateways when it has several, the Hermes sidebar switch on that surface, then its Hermes Desktop pages. With none it is plain text.
   const chatId = state.chatBotId ?? state.selectedBotId, chatInbox = state.inbox || {}, connected = chatInbox[chatId]?.gateways || [], shown = shownGateway(chatId);
   const unread = unreadOrder(chatId, connected.filter(gateway => unreadOn(chatId, bot, gateway, chatInbox)));
-  chatMenu = { id: chatId, shown, unread, gateways: connected.length > 1 ? connected : [], pages: !!state.webappCanvas && !!chatName && connected.includes('hermes-desktop') };
-  const otherUnread = chatMenu.gateways.length ? unread.filter(gateway => gateway !== shown) : [], menuUsable = chatMenu.gateways.length > 0 || chatMenu.pages;
+  chatMenu = { id: chatId, shown, unread, gateways: connected.length > 1 ? connected : [], pages: !!state.webappCanvas && !!chatName && connected.includes('hermes-desktop'), sidebar: shown === 'hermes-desktop' };
+  const otherUnread = chatMenu.gateways.length ? unread.filter(gateway => gateway !== shown) : [], menuUsable = chatMenu.gateways.length > 0 || chatMenu.pages || chatMenu.sidebar;
   $('chat-name').disabled = !menuUsable; $('chat-name').classList.toggle('openable', menuUsable);
   fillChips($('chat-chips'), otherUnread);
   if (menuUsable) {
@@ -2164,7 +2177,8 @@ $('chat-menu').onclick = (event) => {
   const item = event.target.closest('[role^=menuitem]');
   if (!item) return;
   setChatMenu(false); $('chat-name').focus({ preventScroll: true });
-  if (!item.dataset.gateway) command('canvas-bot-pages', { tab: item.dataset.page });
+  if (item.dataset.sidebar) command('settings', { showHermesSidebar: !(state.showHermesSidebar === true) });
+  else if (!item.dataset.gateway) command('canvas-bot-pages', { tab: item.dataset.page });
   else if (item.dataset.gateway !== chatMenu.shown) command('open-bot', { id: chatMenu.id, surface: item.dataset.gateway });
 };
 $('canvas-tabs').onclick = (event) => { const tab = event.target.closest('[data-canvas]')?.dataset.canvas; if (!tab) return; terminalFocus = tab === 'terminal'; command('canvas-tab', { tab, start: tab === 'terminal' }); };
