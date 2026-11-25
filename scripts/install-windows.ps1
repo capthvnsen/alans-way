@@ -109,7 +109,7 @@ function DownloadRelease {
   }
   $want = InstallerSha512 (Get-Content $latestYml -Raw)
   if (-not $want) { Die 'the release checksum did not name the Windows installer - the download was not installed' }
-  if ((Sha512Base64 $setup) -ne $want) { Die 'the downloaded installer did not match its checksum - nothing was installed' }
+  if ((Sha512Base64 $setup) -cne $want) { Die 'the downloaded installer did not match its checksum - nothing was installed' }
   return $setup
 }
 
