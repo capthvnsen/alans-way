@@ -26,7 +26,7 @@ test('install-windows downloads the stable installer and verifies it before runn
   assert.match(SOURCE, /\$tag -notmatch '\^v\\d\+\\\.\\d\+\\\.\\d\+\$'/);
   assert.match(SOURCE, /Invoke-WebRequest -UseBasicParsing "\$base\/\$InstallerName" -OutFile \$setup/);
   assert.match(SOURCE, /Invoke-WebRequest -UseBasicParsing "\$base\/latest\.yml" -OutFile \$latestYml/);
-  assert.ok(SOURCE.indexOf('if ((Sha512Base64 $setup) -ne $want)') < SOURCE.indexOf('$Setup = DownloadRelease'), 'the checksum is verified before the installer can run');
+  assert.ok(SOURCE.indexOf('if ((Sha512Base64 $setup) -cne $want)') < SOURCE.indexOf('$Setup = DownloadRelease'), 'the checksum is verified before the installer can run');
   assert.match(SOURCE, /SHA512Managed/);
   assert.match(SOURCE, /\[Convert\]::ToBase64String\(\$sha\.ComputeHash\(\$stream\)\)/);
 });
@@ -81,7 +81,8 @@ public class FakeInstaller {
 function fixture(dir, { badChecksum = false } = {}) {
   const installer = compileFakeInstaller(dir);
   let sha512 = crypto.createHash('sha512').update(fs.readFileSync(installer)).digest('base64');
-  if (badChecksum) sha512 = `${sha512[0] === 'A' ? 'B' : 'A'}${sha512.slice(1)}`;
+  // Base64 is case-sensitive and PowerShell's -ne is not: a case-only difference must still fail.
+  if (badChecksum) sha512 = sha512.replace(/[a-z]/i, (c) => (c === c.toLowerCase() ? c.toUpperCase() : c.toLowerCase()));
   const yml = path.join(dir, 'latest.yml');
   fs.writeFileSync(yml, `version: 9.9.9\nfiles:\n  - url: OpenAlan-windows-setup.exe\n    sha512: ${sha512}\n    size: ${fs.statSync(installer).size}\npath: OpenAlan-windows-setup.exe\nsha512: ${sha512}\n`);
   return { installer, yml };
