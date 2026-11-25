@@ -85,7 +85,7 @@ if (!process.versions.electron) {
     const rows = () => run(`new Promise(resolve => requestAnimationFrame(() => resolve([...document.querySelectorAll('#native-pane .nc-list > .nc-row')].map(row => ({ role: row.classList.contains('user') ? 'user' : row.classList.contains('assistant') ? 'assistant' : 'card', text: (row.innerText.trim() || row.textContent).replace(/\\s*Copy$/, '').trim() })))))`);
     const marksAfter = (name, t0) => run(`(window.__nativeChatMarks || []).filter(m => m.name === ${JSON.stringify(name)} && m.t >= ${t0}).map(m => m.t)`);
     const visible = (selector) => run(`(() => { const node = document.querySelector(${JSON.stringify(selector)}); return !!node && !!node.offsetParent; })()`);
-    const click = (selector) => run(`document.querySelector(${JSON.stringify(selector)}).click()`);
+    const click = (selector) => run(`(async () => { const item = document.querySelector(${JSON.stringify(selector)}); const t = performance.now(); render(state); if (typeof nativeView !== 'undefined' && nativeView) { nativeView.setState(await nativeChat.getState()); await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); } if (!item.isConnected) throw new Error('a state update replaced the control before its click'); item.click(); return t; })()`);
     const idle = () => until(async () => !(await native()).run, 'reply finished', 30000);
     const type = async (text) => {
       await until(() => visible('#native-pane .nc-send'), 'send button');
@@ -99,7 +99,7 @@ if (!process.versions.electron) {
     const openSession = async (id) => {
       await click('#native-pane .nc-switch');
       await until(() => visible(`#native-pane .nc-menu-item[data-id="${id}"]`), `menu item ${id}`);
-      const t0 = await run(`(() => { const t = performance.now(); document.querySelector('#native-pane .nc-menu-item[data-id="${id}"]').click(); return t; })()`);
+      const t0 = await click(`#native-pane .nc-menu-item[data-id="${id}"]`);
       await until(async () => (await native()).activeId === id, `active ${id}`);
       return t0;
     };
@@ -289,7 +289,7 @@ if (!process.versions.electron) {
       assert.match(await run(`document.querySelector('#native-pane .nc-readonly').innerText`), /from Telegram, so it is read-only here[\s\S]*Continue here/);
       assert.equal(await visible('#native-pane .nc-composer'), false);
       if (!LAB) {
-        await run(`[...document.querySelectorAll('#native-pane .nc-readonly button')].find(b => b.textContent === 'Continue here').click()`);
+        await click('#native-pane .nc-readonly button');
         await until(async () => { const s = await native(); return s.activeId !== telegramId && !s.thread.readOnly; }, 'forked');
         await until(() => visible('#native-pane .nc-composer'), 'composer after Continue here');
         await until(async () => (await rows()).length === 6, 'fork paints the copied history');

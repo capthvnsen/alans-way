@@ -65,6 +65,7 @@
     let pinnedToBottom = true;
     let composing = false;             // IME composition guard
     let lastSig = '';
+    let barSig = '', transcriptBodySig = '', transcriptTurnSig = '', requestsSig = '';
     let disposed = false;
     let focusMemory = null;
     const focusTargets = new Map();
@@ -225,6 +226,13 @@
     }
 
     function renderBar() {
+      const convoForSig = state.conversation;
+      const signature = JSON.stringify([
+        state.target, state.principal, state.generation, state.selected, state.status, state.error,
+        convoForSig && [convoForSig.phase, convoForSig.truncated, convoForSig.stats, convoForSig.errors?.at(-1), convoForSig.statusLine],
+      ]);
+      if (barSig === signature) return;
+      barSig = signature;
       bar.innerHTML = '';
       const t = state.target;
       bar.append(el('span', 'hermes-target',
@@ -286,76 +294,97 @@
     }
 
     function renderTranscript() {
-      transcript.innerHTML = '';
-      // Live conversation first; otherwise the retained last-known transcript
-      // of the still-selected session — rendered visibly stale, never as live.
+      // Live tokens repaint only the trailing streaming row. The finished
+      // transcript keeps its nodes, so open reasoning and retry buttons are
+      // not swapped out from under the pointer on every token.
       const convo = state.conversation;
       const stale = !convo && retained();
       const shown = convo || stale?.convo;
       transcript.classList.toggle('stale', !!stale);
-      if (!shown) {
-        const emptyReady = state.storedSessionsError
-          ? `No live conversation is selected. ${state.storedSessionsError}`
-          : state.storedSessions?.length ? 'Resume a saved conversation above, or start a new session.'
-            : state.sessions?.length ? 'Select a live conversation to start.'
-              : 'No live or saved conversations on this backend. Use New Hermes session to start.';
-        transcript.append(el('div', 'hermes-empty',
-          state.status === 'ready' ? emptyReady
-            : state.selected ? 'Connection lost — reconnect to load this conversation.' : ''));
-        return;
-      }
-      if (stale) {
-        transcript.append(el('div', 'hermes-note hermes-stale-note',
-          `${state.status === 'connecting' ? 'Reconnecting' : 'Connection lost'} — last known transcript${stale.title ? ` of “${stale.title}”` : ''}; it may have moved on.`));
-      }
-      if (shown.transcriptDropped > 0) {
-        transcript.append(el('div', 'hermes-note',
-          `${shown.transcriptDropped} older entr${shown.transcriptDropped === 1 ? 'y' : 'ies'} not shown.`));
-      }
-      for (const row of shown.transcript) {
-        const item = el('div', `hermes-msg ${row.role || 'system'}${row.status === 'sending' ? ' sending' : ''}`);
-        item.append(renderText(row.text ?? '', row.role === 'assistant'));
-        if (row.reasoning) {
-          const think = el('details', 'hermes-reasoning');
-          think.append(el('summary', '', 'Reasoning'), renderText(row.reasoning, false));
-          item.append(think);
-        }
-        for (const tool of row.tools || []) {
-          item.append(el('div', `hermes-tool ${tool.status}`,
-            `${tool.name || 'tool'} · ${tool.status}${tool.summary ? ` — ${tool.summary}` : ''}`));
-        }
-        const badge = SEND_STATUS[row.status];
-        if (badge || row.error) {
-          const meta = el('div', 'hermes-msg-meta');
-          if (badge) meta.append(el('span', 'hermes-badge', badge));
-          if (row.error) meta.append(el('span', 'hermes-badge error', String(row.error.message || row.error.code || row.error)));
-          // A retained row's retry would be a dead control — its generation
-          // fence can never pass once the socket is gone. Live rows only.
-          if (row.status === 'uncertain' && !stale) {
-            const retry = el('button', 'secondary-button hermes-inline-retry', 'Retry send');
-            retry.type = 'button';
-            const text = row.text;
-            const captured = { sessionId: state.selected?.sessionId, generation: state.generation };
-            retry.onclick = () => {
-              if (state?.selected?.sessionId !== captured.sessionId || state?.generation !== captured.generation) return;
-              // An explicit resend of the exact tombstone text is this view's
-              // own send — its ack clears the preserved draft like any other.
-              dispatchSend(captured, text);
-            };
-            meta.append(retry);
+      const empty = !shown ? [
+        state.status, !!state.selected, state.storedSessionsError,
+        state.storedSessions?.length || 0, state.sessions?.length || 0,
+      ] : null;
+      const bodySig = JSON.stringify([empty, !!stale, stale?.title, state.target, state.selected, state.status, state.generation, shown?.transcriptDropped || 0, shown?.transcript || null]);
+      const turnSig = JSON.stringify([shown?.turn || null, !!stale]);
+      if (bodySig !== transcriptBodySig) {
+        const detailsOf = () => typeof transcript.querySelectorAll === 'function'
+          ? [...transcript.querySelectorAll('details')]
+          : transcript.findAll((node) => node.tagName === 'DETAILS');
+        const detailsBefore = detailsOf(), openDetails = detailsBefore.map((node, index) => node.open ? index : -1).filter(index => index >= 0);
+        transcriptBodySig = bodySig;
+        transcriptTurnSig = '';
+        transcript.innerHTML = '';
+        if (!shown) {
+          const emptyReady = state.storedSessionsError
+            ? `No live conversation is selected. ${state.storedSessionsError}`
+            : state.storedSessions?.length ? 'Resume a saved conversation above, or start a new session.'
+              : state.sessions?.length ? 'Select a live conversation to start.'
+                : 'No live or saved conversations on this backend. Use New Hermes session to start.';
+          transcript.append(el('div', 'hermes-empty',
+            state.status === 'ready' ? emptyReady
+              : state.selected ? 'Connection lost — reconnect to load this conversation.' : ''));
+        } else {
+          if (stale) {
+            transcript.append(el('div', 'hermes-note hermes-stale-note',
+              `${state.status === 'connecting' ? 'Reconnecting' : 'Connection lost'} — last known transcript${stale.title ? ` of “${stale.title}”` : ''}; it may have moved on.`));
           }
-          item.append(meta);
+          if (shown.transcriptDropped > 0) {
+            transcript.append(el('div', 'hermes-note',
+              `${shown.transcriptDropped} older entr${shown.transcriptDropped === 1 ? 'y' : 'ies'} not shown.`));
+          }
+          for (const row of shown.transcript) {
+            const item = el('div', `hermes-msg ${row.role || 'system'}${row.status === 'sending' ? ' sending' : ''}`);
+            item.append(renderText(row.text ?? '', row.role === 'assistant'));
+            if (row.reasoning) {
+              const think = el('details', 'hermes-reasoning');
+              think.append(el('summary', '', 'Reasoning'), renderText(row.reasoning, false));
+              item.append(think);
+            }
+            for (const tool of row.tools || []) {
+              item.append(el('div', `hermes-tool ${tool.status}`,
+                `${tool.name || 'tool'} · ${tool.status}${tool.summary ? ` — ${tool.summary}` : ''}`));
+            }
+            const badge = SEND_STATUS[row.status];
+            if (badge || row.error) {
+              const meta = el('div', 'hermes-msg-meta');
+              if (badge) meta.append(el('span', 'hermes-badge', badge));
+              if (row.error) meta.append(el('span', 'hermes-badge error', String(row.error.message || row.error.code || row.error)));
+              // A retained row's retry would be a dead control — its generation
+              // fence can never pass once the socket is gone. Live rows only.
+              if (row.status === 'uncertain' && !stale) {
+                const retry = el('button', 'secondary-button hermes-inline-retry', 'Retry send');
+                retry.type = 'button';
+                const text = row.text;
+                const captured = { sessionId: state.selected?.sessionId, generation: state.generation };
+                retry.onclick = () => {
+                  if (state?.selected?.sessionId !== captured.sessionId || state?.generation !== captured.generation) return;
+                  // An explicit resend of the exact tombstone text is this view's
+                  // own send — its ack clears the preserved draft like any other.
+                  dispatchSend(captured, text);
+                };
+                meta.append(retry);
+              }
+              item.append(meta);
+            }
+            transcript.append(item);
+          }
         }
-        transcript.append(item);
+        const detailsAfter = detailsOf();
+        for (const index of openDetails) if (detailsAfter[index]) detailsAfter[index].open = true;
       }
-      if (shown.turn) {
-        // A retained turn is frozen text — never painted as live streaming.
-        const live = el('div', `hermes-msg assistant${stale ? '' : ' streaming'}`);
-        live.append(renderText(shown.turn.text || '…', true));
-        for (const tool of shown.turn.tools || []) {
-          live.append(el('div', `hermes-tool ${tool.status}`, `${tool.name || 'tool'} · ${tool.status}`));
+      if (turnSig !== transcriptTurnSig) {
+        transcriptTurnSig = turnSig;
+        transcript.querySelector('.hermes-live-turn')?.remove();
+        if (shown?.turn) {
+          // A retained turn is frozen text — never painted as live streaming.
+          const live = el('div', `hermes-msg assistant hermes-live-turn${stale ? '' : ' streaming'}`);
+          live.append(renderText(shown.turn.text || '…', true));
+          for (const tool of shown.turn.tools || []) {
+            live.append(el('div', `hermes-tool ${tool.status}`, `${tool.name || 'tool'} · ${tool.status}`));
+          }
+          transcript.append(live);
         }
-        transcript.append(live);
       }
       stick();
     }
@@ -382,6 +411,13 @@
     }
 
     function renderRequests() {
+      const convoForSig = state.conversation;
+      const signature = JSON.stringify([
+        state.target, state.selected, state.generation, state.uncertain,
+        convoForSig?.phase, convoForSig?.pendingRequests, convoForSig?.requestOutcomes,
+      ]);
+      if (requestsSig === signature) return;
+      requestsSig = signature;
       requestsDock.innerHTML = '';
       const tomb = state.uncertain;
       if (tomb && tomb.sessionId === state.selected?.sessionId) {

@@ -465,6 +465,9 @@
     }
 
     function renderMenu() {
+      const signature = JSON.stringify([state.activeId, (state.sessions || []).slice(0, 30).map((s) => [s.id, s.title, s.preview, s.shared, s.source, s.running, s.waiting, s.unread])]);
+      if (menu.dataset.signature === signature) return;
+      menu.dataset.signature = signature;
       const focused = menu.contains(document.activeElement) && (document.activeElement.dataset.id || 'new');
       menu.replaceChildren();
       const fresh = button('nc-menu-item nc-menu-new', 'New chat', () => { closeMenu(); command('new'); textarea.focus(); });
@@ -572,8 +575,12 @@
       composer.classList.toggle('hidden', ro);
       readOnly.classList.toggle('hidden', !ro);
       if (ro) {
-        readOnly.replaceChildren(el('span', '', `This conversation is from ${sourceLabel(thread.source)}, so it is read-only here.`),
-          button('nc-pill primary', 'Continue here', () => command('fork', { sessionId: s.activeId })));
+        const readonlySignature = `${s.activeId}|${sourceLabel(thread.source)}`;
+        if (readOnly.dataset.signature !== readonlySignature) {
+          readOnly.dataset.signature = readonlySignature;
+          readOnly.replaceChildren(el('span', '', `This conversation is from ${sourceLabel(thread.source)}, so it is read-only here.`),
+            button('nc-pill primary', 'Continue here', () => command('fork', { sessionId: s.activeId })));
+        }
       }
       renderChip();
       const running = !!s.run;

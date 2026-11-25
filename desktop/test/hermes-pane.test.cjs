@@ -275,6 +275,9 @@ test('the pane distinguishes saved conversations from live identities and dispat
   assert.ok(start > 0 && end > start);
   vm.runInNewContext(`${src.slice(start, end)}\nthis.renderHermes = renderHermes;`, ctx);
   ctx.renderHermes();
+  const firstRender = list.findAll(n => n.tagName === 'BUTTON');
+  ctx.renderHermes();
+  assert.deepEqual(list.findAll(n => n.tagName === 'BUTTON'), firstRender, 'an unchanged state push keeps the same session controls');
   assert.match(list.textContent, /No live conversations/);
   assert.match(list.textContent, /Saved conversations/);
   const resume = list.findAll(n => n.tagName === 'BUTTON' && n.textContent === 'Resume Lighthouse')[0];

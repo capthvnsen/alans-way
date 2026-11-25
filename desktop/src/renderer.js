@@ -214,12 +214,23 @@ function tabIcon(tab) {
   return icon;
 }
 function tabStripEntries() { return state.tabs.filter(tab => tab.host !== 'vps' || tab.handback?.state === 'awaiting_human'); }
+function tabStripSignature(entries) {
+  return JSON.stringify([
+    entries.map(tab => [tab.id, tab.host, tab.title, tab.favicon, tab.loading, tab.controller, tab.agentHue, tab.agentBusy, tab.handback?.state, tab.botId]),
+    state.canvasTab, state.browserTabId, state.browserTabHost, state.tabs.some(item => item.id === state.browserTabId),
+    state.bots.map(bot => [bot.id, bot.name]), state.hostLabel, state.remotePlatform,
+  ]);
+}
 function renderTabs() {
   const container = $('tabs'), focused = document.activeElement.closest('.tab');
   const focusedId = focused?.dataset.tabId, focusedHost = focused?.dataset.host, focusedClose = document.activeElement.classList.contains('tab-close');
   const focusedIndex = focused ? [...container.children].indexOf(focused) : -1;
+  const entries = tabStripEntries(), signature = tabStripSignature(entries);
+  // State broadcasts land here many times a second; replacing an unchanged tab
+  // between mouse down and mouse up loses the click.
+  if (container.dataset.signature === signature) return;
+  container.dataset.signature = signature;
   container.replaceChildren();
-  const entries = tabStripEntries();
   entries.forEach((tab, index) => {
     const selected = state.canvasTab === 'browser' && state.browserTabId === tab.id && state.browserTabHost === tab.host;
     const node = element('div', `tab${selected ? ' active' : ''}`); node.setAttribute('role', 'presentation'); node.dataset.tabId = tab.id; node.dataset.host = tab.host;
@@ -287,8 +298,11 @@ function setTabsPanel(open) {
 }
 function renderTabsPanel() {
   const panel = $('tabs-panel'), focusedRow = document.activeElement?.closest('.tabs-panel-row'), focusedTab = focusedRow?.dataset.tabId, focusedHost = focusedRow?.dataset.host;
+  const entries = tabStripEntries(), signature = tabStripSignature(entries);
+  if (panel.dataset.signature === signature) return;
+  panel.dataset.signature = signature;
   panel.replaceChildren();
-  for (const tab of tabStripEntries()) {
+  for (const tab of entries) {
     const selected = state.browserTabId === tab.id && state.browserTabHost === tab.host;
     const row = element('div', `tabs-panel-row${selected ? ' active' : ''}`); row.dataset.tabId = tab.id; row.dataset.host = tab.host;
     const pick = element('button', 'tabs-panel-select'); pick.setAttribute('role', 'menuitemradio'); pick.setAttribute('aria-checked', String(selected));
@@ -2330,28 +2344,40 @@ function renderWebappHelp() {
 function renderHermes() {
   const h = state.hermes || { status: 'unconfigured', sessions: [] };
   const list = $('hermes-list');
-  list.innerHTML = '';
-  for (const session of h.sessions) {
-    const open = element('button', `hermes-chip${session.selected ? ' selected' : ''}`, session.title || session.id);
-    open.type = 'button'; open.setAttribute('aria-pressed', String(!!session.selected));
-    open.onclick = () => hermesCommand('select', { sessionId: session.id, sessionKey: session.key });
-    list.append(open);
-  }
-  if (h.status === 'ready') {
-    if (!h.sessions.length) list.append(element('div', 'hermes-note', 'No live conversations.'));
-    if (h.storedSessions?.length) {
-      list.append(element('div', 'hermes-note', 'Saved conversations'));
-      for (const saved of h.storedSessions) {
-        const resume = element('button', 'hermes-chip', `Resume ${saved.title || saved.id}`);
-        resume.type = 'button';
-        const generation = h.generation;
-        resume.onclick = () => hermesCommand('resume-session', { storedSessionId: saved.id, generation });
-        list.append(resume);
-      }
-    } else if (!h.sessions.length && !h.storedSessionsError) {
-      list.append(element('div', 'hermes-note', 'No saved conversations.'));
+  const signature = JSON.stringify([
+    h.status, h.generation, h.storedSessionsError,
+    (h.sessions || []).map(session => [session.id, session.key, session.sessionId, session.sessionKey, session.title, !!session.selected]),
+    (h.storedSessions || []).map(session => [session.id, session.title]),
+  ]);
+  if (list.dataset.signature !== signature) {
+    const chips = typeof list.querySelectorAll === 'function' ? [...list.querySelectorAll('button')] : list.findAll(node => node.tagName === 'BUTTON');
+    const activeElement = typeof document === 'undefined' ? null : document.activeElement;
+    const focusedChip = chips.indexOf(activeElement);
+    list.dataset.signature = signature;
+    list.innerHTML = '';
+    for (const session of h.sessions) {
+      const open = element('button', `hermes-chip${session.selected ? ' selected' : ''}`, session.title || session.id);
+      open.type = 'button'; open.setAttribute('aria-pressed', String(!!session.selected));
+      open.onclick = () => hermesCommand('select', { sessionId: session.id, sessionKey: session.key });
+      list.append(open);
     }
-    if (h.storedSessionsError) list.append(element('div', 'hermes-note', h.storedSessionsError));
+    if (h.status === 'ready') {
+      if (!h.sessions.length) list.append(element('div', 'hermes-note', 'No live conversations.'));
+      if (h.storedSessions?.length) {
+        list.append(element('div', 'hermes-note', 'Saved conversations'));
+        for (const saved of h.storedSessions) {
+          const resume = element('button', 'hermes-chip', `Resume ${saved.title || saved.id}`);
+          resume.type = 'button';
+          const generation = h.generation;
+          resume.onclick = () => hermesCommand('resume-session', { storedSessionId: saved.id, generation });
+          list.append(resume);
+        }
+      } else if (!h.sessions.length && !h.storedSessionsError) {
+        list.append(element('div', 'hermes-note', 'No saved conversations.'));
+      }
+      if (h.storedSessionsError) list.append(element('div', 'hermes-note', h.storedSessionsError));
+    }
+    if (focusedChip >= 0) (typeof list.querySelectorAll === 'function' ? [...list.querySelectorAll('button')] : list.findAll(node => node.tagName === 'BUTTON'))[focusedChip]?.focus({ preventScroll: true });
   }
   renderHermesSetup(h);
 }
