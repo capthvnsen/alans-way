@@ -146,7 +146,7 @@ test('the Windows installer downloads, verifies and installs the release by defa
 
 test('the Windows installer aborts a checksum mismatch without touching the installed app', e2e, () => {
   const run = runInstaller({ badChecksum: true });
-  assert.notEqual(run.result.status, 0);
+  assert.notEqual(run.result.status, 0, run.result.stdout + run.result.stderr);
   assert.match(run.result.stderr + run.result.stdout, /did not match its checksum/);
   assert.equal(fs.readFileSync(path.join(run.dest, 'alans-way-localapp.exe'), 'utf8'), 'old');
   assert.equal(run.text(run.logs.installer), '');
@@ -155,7 +155,7 @@ test('the Windows installer aborts a checksum mismatch without touching the inst
 
 test('the Windows installer restores the old app when the installer fails', e2e, () => {
   const run = runInstaller({ failInstaller: true });
-  assert.notEqual(run.result.status, 0);
+  assert.notEqual(run.result.status, 0, run.result.stdout + run.result.stderr);
   assert.match(run.result.stderr + run.result.stdout, /previous app was restored/);
   assert.equal(fs.readFileSync(path.join(run.dest, 'alans-way-localapp.exe'), 'utf8'), 'old');
   assert.ok(!fs.existsSync(`${run.dest}.old`));
