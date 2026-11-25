@@ -145,6 +145,9 @@ download_release() {
   [ "$ID" = "$BUNDLE_ID" ] || die 'the downloaded image holds a different app — nothing was installed'
   codesign --verify --deep --strict "$APP_IN_IMAGE" >/dev/null 2>&1 \
     || die 'the downloaded app failed macOS signature verification — nothing was installed'
+  # A valid signature from anyone else is not this app: pin the publisher's team.
+  codesign --verify -R='anchor apple generic and certificate leaf[subject.OU] = "8GAN9UP93W"' "$APP_IN_IMAGE" >/dev/null 2>&1 \
+    || die 'the downloaded app is not signed by its publisher — nothing was installed'
   if xcrun stapler validate "$APP_IN_IMAGE" >/dev/null 2>&1; then
     :
   elif spctl --assess --type execute "$APP_IN_IMAGE" >/dev/null 2>&1; then
