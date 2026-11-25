@@ -105,7 +105,10 @@ function Start-Process {
   param([Parameter(Position=0)][string]$FilePath)
   Add-Content -Path $env:FAKE_START_LOG -Value $FilePath
 }
+# exit in a dot-sourced script only returns here, so pass its code on.
+$global:LASTEXITCODE = 0
 . ${psq(SCRIPT)}
+exit $LASTEXITCODE
 `);
 }
 
