@@ -308,9 +308,7 @@
       const bodySig = JSON.stringify([empty, !!stale, stale?.title, state.target, state.selected, state.status, state.generation, shown?.transcriptDropped || 0, shown?.transcript || null]);
       const turnSig = JSON.stringify([shown?.turn || null, !!stale]);
       if (bodySig !== transcriptBodySig) {
-        const detailsOf = () => typeof transcript.querySelectorAll === 'function'
-          ? [...transcript.querySelectorAll('details')]
-          : transcript.findAll((node) => node.tagName === 'DETAILS');
+        const detailsOf = () => [...transcript.querySelectorAll('details')];
         const detailsBefore = detailsOf(), openDetails = detailsBefore.map((node, index) => node.open ? index : -1).filter(index => index >= 0);
         transcriptBodySig = bodySig;
         transcriptTurnSig = '';

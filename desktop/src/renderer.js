@@ -2350,7 +2350,7 @@ function renderHermes() {
     (h.storedSessions || []).map(session => [session.id, session.title]),
   ]);
   if (list.dataset.signature !== signature) {
-    const chips = typeof list.querySelectorAll === 'function' ? [...list.querySelectorAll('button')] : list.findAll(node => node.tagName === 'BUTTON');
+    const chips = [...list.querySelectorAll('button')];
     const activeElement = typeof document === 'undefined' ? null : document.activeElement;
     const focusedChip = chips.indexOf(activeElement);
     list.dataset.signature = signature;
@@ -2377,7 +2377,7 @@ function renderHermes() {
       }
       if (h.storedSessionsError) list.append(element('div', 'hermes-note', h.storedSessionsError));
     }
-    if (focusedChip >= 0) (typeof list.querySelectorAll === 'function' ? [...list.querySelectorAll('button')] : list.findAll(node => node.tagName === 'BUTTON'))[focusedChip]?.focus({ preventScroll: true });
+    if (focusedChip >= 0) [...list.querySelectorAll('button')][focusedChip]?.focus({ preventScroll: true });
   }
   renderHermesSetup(h);
 }

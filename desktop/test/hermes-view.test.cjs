@@ -55,6 +55,7 @@ class FakeNode {
   hasClass(c) { return this.className.split(/\s+/).includes(c); }
   remove() { if (this.parent) this.parent.children.splice(this.parent.children.indexOf(this), 1); }
   querySelector(sel) { return this.findAll((n) => (sel.startsWith('.') ? n.className.split(/\s+/).includes(sel.slice(1)) : n.tagName === sel.toUpperCase()))[0] || null; }
+  querySelectorAll(tag) { return this.findAll((n) => n.tagName === tag.toUpperCase()); }
   findAll(pred, out = []) {
     for (const c of this.children) {
       if (c instanceof FakeFragment) { for (const g of c.children) { if (pred(g)) out.push(g); g.findAll && g.findAll(pred, out); } }

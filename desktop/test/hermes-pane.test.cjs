@@ -38,6 +38,7 @@ class FakeNode {
   addEventListener(t, f) { (this.listeners[t] ||= []).push(f); }
   click() { if (this.onclick) return this.onclick({ type: 'click', stopPropagation() {} }); }
   querySelector(sel) { return this.findAll(n => n.hasClass(sel.slice(1)))[0] || null; }
+  querySelectorAll(tag) { return this.findAll(n => n.tagName === tag.toUpperCase()); }
   hasClass(c) { return this.className.split(/\s+/).includes(c); }
   findAll(pred, out = []) {
     for (const c of this.children) { if (pred(c)) out.push(c); c.findAll(pred, out); }
