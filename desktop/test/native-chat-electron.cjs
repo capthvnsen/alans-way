@@ -109,6 +109,9 @@ if (!process.versions.electron) {
       // Configure through Settings: Save, Test, then pick the surface.
       await run(`document.getElementById('settings-fallback').click()`);
       await until(() => visible('#settings-native-url'), 'native settings');
+      assert.equal(await run(`document.querySelector('#settings-chat-surface option[value="native"]').textContent`), 'Alan’s native chat (beta)');
+      assert.equal(await run(`document.getElementById('settings-content').textContent.includes('Beta: Telegram and Hermes Desktop are the stable chat surfaces.')`), true, 'the settings section names the stable surfaces');
+      assert.equal(await run(`[...document.querySelectorAll('#settings-content .settings-subheading')].some(n => n.textContent === 'Alan’s native chat (beta)')`), true, 'the native settings subheading says beta');
       assert.equal(await run(`document.querySelector('#settings-chat-surface option[value="native"]').disabled`), true, 'not selectable before it is configured');
       await run(`(() => { for (const [id, value] of [['settings-native-url', ${JSON.stringify(process.env.NATIVE_CHAT_URL)}], ['settings-native-key', ${JSON.stringify(process.env.NATIVE_CHAT_KEY)}]]) { const input = document.getElementById(id); input.value = value; input.dispatchEvent(new Event('input')); } document.getElementById('settings-native-save').click(); })()`);
       await until(async () => (await run(`document.getElementById('settings-native-status').textContent`)) === 'Saved.', 'saved');
@@ -123,6 +126,8 @@ if (!process.versions.electron) {
       assert.equal(JSON.parse(fs.readFileSync(prefsFile, 'utf8')).chatSurface, 'native');
       await click('#modal-close');
       await until(() => visible('#native-pane .nc-composer'), 'native pane');
+      assert.equal(await run(`document.getElementById('native-pane').getAttribute('aria-label')`), 'Alan’s native chat (beta)');
+      assert.equal(await run(`document.querySelector('#native-pane .nc-head .nc-pill')?.textContent`), 'Beta');
       assert.equal(await run(`(() => { const box = document.querySelector('#native-pane textarea'); return box.scrollHeight <= box.clientHeight; })()`), true, 'the empty composer shows a whole line');
 
       // The compaction note above the composer and the quiet transcript row, on a second view fed a stub api (the mock speaks REST, which reports no context size).
