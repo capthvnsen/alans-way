@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { CHAT_ONLY_CSS, chatOnlyLaunchFragment, chatOnlyTarget, installChatOnly, shouldUseChatOnly } = require('../src/webapp-chat-only.cjs');
+const { CHAT_ONLY_CSS, chatOnlyLaunchFragment, chatOnlyTarget, installChatOnly, setChatOnly, shouldUseChatOnly } = require('../src/webapp-chat-only.cjs');
 
 const HOST = 'https://agent-vm.tail1234.ts.net';
 
@@ -90,12 +90,14 @@ class FakeContents {
     this.listeners = new Map();
     this.inserted = [];
     this.removed = [];
+    this.loaded = [];
   }
   getURL() { return this.url; }
   on(event, fn) { this.listeners.set(event, fn); }
   once(event, fn) { this.listeners.set(event, fn); }
   insertCSS(css) { const key = `css-${this.inserted.length + 1}`; this.inserted.push([key, css]); return Promise.resolve(key); }
   removeInsertedCSS(key) { this.removed.push(key); return Promise.resolve(); }
+  loadURL(url) { this.loaded.push(url); this.url = url; return Promise.resolve(); }
   emit(event, ...args) { this.listeners.get(event)?.(...args); }
 }
 const flush = () => new Promise((resolve) => setImmediate(resolve));
@@ -136,4 +138,61 @@ test('install removes the rules for an in-page workspace page and skips launch a
     await flush();
     assert.equal(skipped.inserted.length, 0, path);
   }
+});
+
+test('install can start with the sidebar showing and applies no chat-only rules', async () => {
+  const contents = new FakeContents(`${HOST}/#/abc123`);
+  installChatOnly(contents, false);
+  await flush();
+  assert.equal(contents.inserted.length, 0);
+
+  contents.emit('did-navigate-in-page', {}, contents.url, true);
+  contents.emit('did-stop-loading');
+  await flush();
+  assert.equal(contents.inserted.length, 0);
+  assert.deepEqual(contents.removed, []);
+});
+
+test('toggle while loaded removes and restores the rules without changing the conversation route', async () => {
+  const start = chatOnlyTarget(`${HOST}/?theme=dim#/abc123`);
+  const contents = new FakeContents(start);
+  installChatOnly(contents);
+  await flush();
+  assert.equal(contents.inserted.length, 1);
+
+  setChatOnly(contents, false);
+  await flush();
+  assert.deepEqual(contents.removed, ['css-1']);
+  assert.equal(contents.loaded.length, 1);
+  const sidebar = new URL(contents.loaded[0]);
+  assert.equal(sidebar.searchParams.get('win'), null);
+  assert.equal(sidebar.searchParams.get('theme'), 'dim');
+  assert.equal(sidebar.hash, '#/abc123');
+  assert.equal(contents.inserted.length, 1);
+
+  setChatOnly(contents, true);
+  await flush();
+  assert.equal(contents.inserted.length, 2);
+  assert.deepEqual(contents.removed, ['css-1']);
+  assert.equal(contents.loaded.length, 2);
+  const chatOnly = new URL(contents.loaded[1]);
+  assert.equal(chatOnly.searchParams.get('win'), 'secondary');
+  assert.equal(chatOnly.searchParams.get('theme'), 'dim');
+  assert.equal(chatOnly.hash, '#/abc123');
+});
+
+test('toggle does not navigate when the secondary-window flag already matches', async () => {
+  const contents = new FakeContents(chatOnlyTarget(`${HOST}/#/abc123`));
+  installChatOnly(contents);
+  await flush();
+  setChatOnly(contents, true);
+  await flush();
+  assert.equal(contents.loaded.length, 0);
+
+  setChatOnly(contents, false);
+  await flush();
+  assert.equal(contents.loaded.length, 1);
+  setChatOnly(contents, false);
+  await flush();
+  assert.equal(contents.loaded.length, 1);
 });
