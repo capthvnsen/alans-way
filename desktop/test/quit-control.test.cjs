@@ -11,7 +11,7 @@ const deferred = () => {
 };
 
 function harness({ save, teardown, closeResult = true } = {}) {
-  const events = [], timers = [];
+  const events = [], timers = [], clock = { at: 0 };
   let control;
   const event = () => ({ preventDefault: () => events.push('prevent') });
   const setTimer = (fn, ms) => {
@@ -21,7 +21,7 @@ function harness({ save, teardown, closeResult = true } = {}) {
   };
   const clearTimer = timer => { timer.cleared = true; };
   control = createQuitControl({
-    saveMs: 100, closeMs: 50,
+    saveMs: 100, closeMs: 50, insistMs: 10, now: () => clock.at,
     begin: () => events.push('begin'),
     save: () => { events.push('save'); return save ? save() : Promise.resolve(); },
     close: () => { events.push('close'); return closeResult; },
@@ -32,7 +32,7 @@ function harness({ save, teardown, closeResult = true } = {}) {
     onTeardownError: error => events.push(`teardown-error:${error.message}`),
     setTimer, clearTimer,
   });
-  return { control, events, timers, event };
+  return { control, events, timers, event, clock };
 }
 
 test('a first quit waits for the sign-in save, resumes, and tears down only once windows are gone', async () => {
@@ -59,7 +59,10 @@ test('a repeated quit during the save forces exit instead of being swallowed', a
   const saving = deferred(), h = harness({ save: () => saving.promise });
   h.control.beforeQuit(h.event());
   h.control.beforeQuit(h.event());
-  assert.deepEqual(h.events, ['prevent', 'begin', 'save', 'prevent', 'teardown', 'exit:0']);
+  assert.deepEqual(h.events, ['prevent', 'begin', 'save', 'prevent'], 'a key-repeat quit right after the first does not skip the save');
+  h.clock.at = 10;
+  h.control.beforeQuit(h.event());
+  assert.deepEqual(h.events, ['prevent', 'begin', 'save', 'prevent', 'prevent', 'teardown', 'exit:0']);
   h.control.willQuit();
   assert.deepEqual(h.events.filter(value => value === 'teardown'), ['teardown'], 'forced teardown runs once');
 });
@@ -69,6 +72,7 @@ test('a repeated quit while windows are closing still reaches the controller and
   h.control.beforeQuit(h.event());
   await tick();
   assert.deepEqual(h.events, ['prevent', 'begin', 'save', 'close']);
+  h.clock.at = 10;
   h.control.beforeQuit(h.event());
   assert.deepEqual(h.events, ['prevent', 'begin', 'save', 'close', 'prevent', 'teardown', 'exit:0']);
 });
@@ -145,6 +149,7 @@ test('a teardown failure cannot swallow a forced exit', () => {
   const failure = new Error('flush failed');
   const h = harness({ teardown: () => { throw failure; } });
   h.control.beforeQuit(h.event());
+  h.clock.at = 10;
   h.control.beforeQuit(h.event());
   assert.deepEqual(h.events, ['prevent', 'begin', 'save', 'prevent', 'teardown-error:flush failed', 'exit:0']);
 });
