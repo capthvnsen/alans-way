@@ -5,6 +5,7 @@ bootTimer.mark('process-start');
 const { SSH_OPTIONS: TAILNET_SSH_OPTIONS, hermesWebappUrl } = require('./tailnet.cjs');
 const { createWebappSignIn, signInToWebapp, SIGN_IN_ERRORS } = require('./webapp-signin.cjs');
 const { createWebappLink, createLaunchWatch, launchFragment } = require('./webapp-link.cjs');
+const { chatOnlyLaunchFragment, chatOnlyTarget, installChatOnly } = require('./webapp-chat-only.cjs');
 const { authorizeBot, approvalIdentity, registryFile } = require('./bot-auth.cjs');
 const { app, BrowserWindow, WebContentsView, webContents, ipcMain, Menu, Tray, Notification, dialog, clipboard, shell, nativeTheme, screen, nativeImage, session, powerMonitor, net, protocol, systemPreferences, safeStorage } = require('electron');
 const { ACCELERATORS } = require('./workspace-shortcuts.cjs');
@@ -759,7 +760,7 @@ function notifyWaiting(native) {
   waitingBots = now;
 }
 function syncWebapp() {
-  if (chatTarget === 'webapp' && !webappView && webappStatus === 'reachable') createWebappView(webappTarget);
+  if (chatTarget === 'webapp' && !webappView && webappStatus === 'reachable') createWebappView(chatOnlyTarget(webappTarget));
 }
 // A Webapp without sign-in opens only through the one-use link `hermes webapp --no-open`
 // prints; its credential then lives in this view's sessionStorage, never on disk here.
@@ -767,7 +768,7 @@ function openWebappLink(link) {
   if (webappStatus === 'unconfigured') throw new Error('Save the Hermes Desktop address first.');
   if (!String(link ?? '').trim()) throw new Error('Nothing was pasted. Copy the one-use link that hermes webapp --no-open prints on the Hermes host, then paste it here.');
   // The host prints its own address; a tunnel may forward it to another local port, so only the fragment is used.
-  const fragment = launchFragment(link);
+  const fragment = chatOnlyLaunchFragment(launchFragment(link));
   if (!fragment) throw new Error('No one-use link was found in what was pasted. Copy the whole http://…/webapp/launch#ticket=… line that hermes webapp --no-open prints on the Hermes host.');
   const launch = new URL(`webapp/launch${fragment}`, webappTarget);
   chatTarget = 'webapp'; webappLinkStale = false;
@@ -782,6 +783,7 @@ function createWebappView(url) {
     webappStatus = 'needs-link'; webappLinkTrying = false; webappLinkStale = true;
     applyLayout(); broadcast();
   });
+  installChatOnly(webappView.webContents);
 }
 // A one-use-link host: fetch the link over SSH once per episode, so the pane opens with no paste.
 // The link never leaves webappLink; only its plain failure reason is kept for the pane.
@@ -882,7 +884,7 @@ async function signInWebapp() {
   if (target !== webappTarget) return '';
   webappSignInError = failure && SIGN_IN_ERRORS[failure];
   // The Canvas view shares the partition, so it reopens its page with the new cookie too.
-  if (!failure) { webappView?.webContents.loadURL(target).catch(() => {}); canvasPage = ''; applyLayout(); }
+  if (!failure) { webappView?.webContents.loadURL(chatOnlyTarget(target)).catch(() => {}); canvasPage = ''; applyLayout(); }
   broadcast();
   return webappSignInError;
 }
@@ -911,7 +913,7 @@ async function checkWebapp() {
   webappPrivate = needsLink;
   if (webappStatus === 'needs-link') startWebappLink(target); else { webappLinkTrying = false; if (!needsLink) webappLinkFailure = ''; }
   if (chatTarget === 'telegram') applySurface();
-  if (reachable && webappView) webappView.webContents.loadURL(target).catch(() => {});
+  if (reachable && webappView) webappView.webContents.loadURL(chatOnlyTarget(target)).catch(() => {});
   if (reachable && canvasView) canvasPage = '';
   syncWebapp();
   applyLayout(); broadcast();
@@ -2425,7 +2427,7 @@ function registerIpc() {
       case 'webapp-sign-out':
         webappSignIn.forget(); webappSignInError = ''; webappSignInTried = true;
         await session.fromPartition(WEBAPP_PARTITION).clearStorageData();
-        webappView?.webContents.loadURL(webappTarget).catch(() => {});
+        webappView?.webContents.loadURL(chatOnlyTarget(webappTarget)).catch(() => {});
         canvasPage = ''; applyLayout(); broadcast(); break;
       case 'sort-bots': prefs.order = Array.isArray(value.ids) ? value.ids.filter((id) => prefs.bots.some((bot) => bot.id === id)) : prefs.order; savePreferences(); break;
       case 'bot-sort': if (['recent', 'alpha', 'manual'].includes(value.mode)) { prefs.botSort = value.mode; savePreferences(); } break;
