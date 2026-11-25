@@ -55,6 +55,7 @@ app.whenReady().then(async () => {
   const telegram = webContents.getAllWebContents().find(item => item.session === session.fromPartition('persist:telegram'));
   if (telegram) { telegram.stop(); await telegram.loadURL('about:blank'); }
   const evaluate = code => wc.executeJavaScript(code);
+  const click = selector => evaluate(`(() => { const item = document.querySelector(${JSON.stringify(selector)}); render(state); if (!item.isConnected) throw new Error('a state update replaced the control before its click'); item.click(); })()`);
   await waitFor(() => evaluate('typeof window.workspace === "object"').catch(() => false), Boolean);
   const invoke = (name, value) => evaluate(`window.workspace.command(${JSON.stringify(name)}, ${JSON.stringify(value || {})})`);
   const getState = () => evaluate('window.workspace.getState()');
@@ -210,7 +211,8 @@ app.whenReady().then(async () => {
       close: document.querySelectorAll('#tabs-panel .tabs-panel-row[data-host=vps] .tabs-panel-close').length };
   })()`);
   assert.deepEqual(panel, { idle: 0, waiting: 1, close: 0 }, 'the strip overflow menu has the same VM protections');
-  await evaluate('document.getElementById("tabs-menu").click(); document.querySelector("#tabs .tab[data-tab-id=vm-sign-in][data-host=vps] .tab-select").click()');
+  await evaluate('document.getElementById("tabs-menu").click()');
+  await click('#tabs-panel .tabs-panel-row[data-tab-id="vm-sign-in"] .tabs-panel-select');
   await waitFor(getState, state => state.activeTabId === 'vps' && state.activeVpsTabId === remoteTab.id);
   await waitFor(() => evaluate('!!document.getElementById("needs-you-give-back").offsetParent'), Boolean);
   await invoke('activate', { id: idleVm.id, host: 'vps' });
@@ -271,7 +273,7 @@ app.whenReady().then(async () => {
     assert.equal(shown.length, noticesBeforeVm + 1, 'same-id, same-time handbacks notify separately for each computer');
     const vmNotice = shown.at(-1);
     await waitFor(() => evaluate(`!!document.querySelector('.tab[data-tab-id="${local.id}"][data-host="vps"] .tab-select')`), Boolean);
-    await evaluate(`document.querySelector('.tab[data-tab-id="${local.id}"][data-host="vps"] .tab-select').click()`);
+    await click(`.tab[data-tab-id="${local.id}"][data-host="vps"] .tab-select`);
     await waitFor(() => evaluate('document.getElementById("needs-you-text").textContent'), text => text.includes('VM collision sign-in'));
     const before = remoteCalls.length;
     assert.match(await evaluate(`window.workspace.command('control', ${JSON.stringify({ id: local.id, controller: 'agent', giveBack: true, epoch: 100 })}).then(() => '', error => error.message)`), /Choose the tab and its computer/);
@@ -281,7 +283,7 @@ app.whenReady().then(async () => {
     await waitFor(() => remoteCalls.length, count => count === before + 1);
     assert.deepEqual(remoteCalls.at(-1), { id: local.id, body: { controller: 'agent', giveBack: true, epoch: 100 }, human: true });
     assert.equal((await api(`/v1/tabs/${local.id}`)).data.handback.state, 'awaiting_human');
-    await evaluate(`document.querySelector('.tab[data-tab-id="${local.id}"][data-host="${local.host}"] .tab-select').click()`);
+    await click(`.tab[data-tab-id="${local.id}"][data-host="${local.host}"] .tab-select`);
     await waitFor(() => evaluate('document.getElementById("needs-you-text").textContent'), text => text.includes('Local sign-in'));
     await evaluate('document.getElementById("needs-you-give-back").click()');
     await waitFor(async () => (await api(`/v1/tabs/${local.id}`)).data, tab => tab.handback.state === 'human_returned');

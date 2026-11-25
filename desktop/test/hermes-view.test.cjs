@@ -55,6 +55,7 @@ class FakeNode {
   hasClass(c) { return this.className.split(/\s+/).includes(c); }
   remove() { if (this.parent) this.parent.children.splice(this.parent.children.indexOf(this), 1); }
   querySelector(sel) { return this.findAll((n) => (sel.startsWith('.') ? n.className.split(/\s+/).includes(sel.slice(1)) : n.tagName === sel.toUpperCase()))[0] || null; }
+  querySelectorAll(tag) { return this.findAll((n) => n.tagName === tag.toUpperCase()); }
   findAll(pred, out = []) {
     for (const c of this.children) {
       if (c instanceof FakeFragment) { for (const g of c.children) { if (pred(g)) out.push(g); g.findAll && g.findAll(pred, out); } }
@@ -168,6 +169,28 @@ test('tool start and completion repaint while streamed text stays unchanged', as
       turn: { text: 'Working', tools: [{ ...tool, status: 'complete' }] } } });
     assert.match(s.transcript.textContent, /terminal · complete/);
     assert.doesNotMatch(s.transcript.textContent, /terminal · running/);
+  } finally { s.v.dispose(); }
+});
+
+test('streaming repaints keep finished rows, bar actions and request controls intact', async () => {
+  const request = { id: 'approval-1', method: 'approval', sessionId: 's-1', attributed: true,
+    params: { description: 'Run the fixture command?', choices: ['deny', 'once'] } };
+  const initial = baseState({ conversation: { ...baseState().conversation,
+    transcript: [{ role: 'assistant', text: 'finished reply', status: 'complete', reasoning: 'the reasoning' }],
+    turn: { text: 'stream one', tools: [] }, pendingRequests: [request] } });
+  const s = view(initial); await tick();
+  try {
+    const row = s.transcript.findAll((n) => n.className.includes('hermes-msg') && !n.className.includes('hermes-live-turn'))[0];
+    const refresh = s.root.findAll((n) => n.tagName === 'BUTTON' && n.textContent === 'Refresh conversations')[0];
+    const allow = s.root.findAll((n) => n.tagName === 'BUTTON' && n.textContent === 'Allow once')[0];
+    row.findAll((n) => n.tagName === 'DETAILS')[0].open = true;
+    s.rec.emit({ ...initial, conversation: { ...initial.conversation, turn: { text: 'stream one and a half', tools: [] } } });
+    assert.equal(s.transcript.findAll((n) => n === row).length, 1, 'a token repaint keeps finished rows');
+    assert.equal(s.root.findAll((n) => n === refresh).length, 1, 'a token repaint keeps bar actions');
+    assert.equal(s.root.findAll((n) => n === allow).length, 1, 'a token repaint keeps approval controls');
+    s.rec.emit({ ...initial, conversation: { ...initial.conversation,
+      transcript: [...initial.conversation.transcript, { role: 'user', text: 'next', status: 'admitted' }] } });
+    assert.equal(s.transcript.findAll((n) => n.tagName === 'DETAILS')[0].open, true, 'an appended row does not close open reasoning');
   } finally { s.v.dispose(); }
 });
 
