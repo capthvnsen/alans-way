@@ -218,12 +218,14 @@ Code: `resolveChatSurface()` in `src/shell-support.cjs`, `hermesWebappUrl()` in
 
 Known limits, also marked in the code:
 
-- Webapp **New Window** and session pop-outs do nothing.
+- Webapp **New Window** and session pop-outs open as real windows on the Webapp's partition,
+  held to the same origin guard. Other origins open in the Browser pane.
 - **Nous sign-in does not work**, because leaving the origin is refused. Password
   sign-in only.
-- A no-sign-in Hermes (loopback, or through an SSH tunnel) needs a pasted one-use link
-  after every Workspace restart, because Hermes keeps that sign-in in the view's
-  `sessionStorage`. Switching surfaces keeps it.
+- A no-sign-in Hermes (loopback, or through an SSH tunnel) needs a one-use link after
+  every Workspace restart, because Hermes keeps that sign-in in the view's
+  `sessionStorage`. With a saved server SSH address the app fetches the link itself
+  (`src/webapp-link.cjs`); without one it has to be pasted. Switching surfaces keeps it.
 - A gateway that stops *after* the view has loaded shows the Webapp's own offline state,
   not this help. Reachability is not re-checked on a timer.
 - Onboarding still assumes Telegram. A new user sees it before this setting matters.

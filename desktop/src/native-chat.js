@@ -4,6 +4,8 @@
 // text goes through markdown-it with HTML disabled; nothing else is set as HTML.
 (() => {
   const policy = typeof module !== 'undefined' && module.exports ? require('./compact-policy.cjs') : window.CompactPolicy;
+  const gatewayList = typeof module !== 'undefined' && module.exports ? require('./gateway-list.js') : window.GatewayList;
+  const nativeChatLabel = gatewayList.NATIVE_CHAT_LABEL, nativeChatBeta = gatewayList.nativeChatBetaLabel();
   // A paragraph that is only `::name{key="value" ...}` is a widget block.
   const DIRECTIVE = /^::([a-z][\w-]{0,40})\{((?:\s*[\w-]{1,40}="[^"\n]{0,2000}")*)\s*\}$/i;
   function parseDirective(text) {
@@ -192,6 +194,7 @@
     const draftKey = () => state?.activeId || 'new';
 
     root.replaceChildren();
+    root.setAttribute('aria-label', nativeChatLabel);
     const head = el('div', 'nc-head');
     const switcher = button('nc-switch', '');
     switcher.setAttribute('aria-haspopup', 'menu');
@@ -203,7 +206,9 @@
     const newBtn = button('nc-icon nc-new', '', () => command('new'));
     newBtn.title = 'New chat'; newBtn.setAttribute('aria-label', 'New chat');
     newBtn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>';
-    head.append(switcher, newBtn, menu);
+    head.append(switcher);
+    if (nativeChatBeta) head.append(el('span', 'nc-pill', nativeChatBeta));
+    head.append(newBtn, menu);
     const notice = el('div', 'nc-notice hidden');
     notice.setAttribute('role', 'status');
     const linkBanner = el('div', 'nc-conn hidden');
@@ -465,6 +470,9 @@
     }
 
     function renderMenu() {
+      const signature = JSON.stringify([state.activeId, (state.sessions || []).slice(0, 30).map((s) => [s.id, s.title, s.preview, s.shared, s.source, s.running, s.waiting, s.unread])]);
+      if (menu.dataset.signature === signature) return;
+      menu.dataset.signature = signature;
       const focused = menu.contains(document.activeElement) && (document.activeElement.dataset.id || 'new');
       menu.replaceChildren();
       const fresh = button('nc-menu-item nc-menu-new', 'New chat', () => { closeMenu(); command('new'); textarea.focus(); });
@@ -572,8 +580,12 @@
       composer.classList.toggle('hidden', ro);
       readOnly.classList.toggle('hidden', !ro);
       if (ro) {
-        readOnly.replaceChildren(el('span', '', `This conversation is from ${sourceLabel(thread.source)}, so it is read-only here.`),
-          button('nc-pill primary', 'Continue here', () => command('fork', { sessionId: s.activeId })));
+        const readonlySignature = `${s.activeId}|${sourceLabel(thread.source)}`;
+        if (readOnly.dataset.signature !== readonlySignature) {
+          readOnly.dataset.signature = readonlySignature;
+          readOnly.replaceChildren(el('span', '', `This conversation is from ${sourceLabel(thread.source)}, so it is read-only here.`),
+            button('nc-pill primary', 'Continue here', () => command('fork', { sessionId: s.activeId })));
+        }
       }
       renderChip();
       const running = !!s.run;

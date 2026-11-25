@@ -267,55 +267,55 @@ test('a chat link notification arriving after the human clicked reuses the exist
   assert.equal(existing.epoch, 7);
 });
 
-test('ordinary quit keeps views alive until cookies are durable, and a repeated quit shares the drain', async () => {
-  let listener, finish, saves = 0, closes = 0;
-  const app = { on: (_name, fn) => { listener = fn; }, quit: () => listener({ preventDefault() {} }) };
-  const context = vm.createContext({ vaultLock: { isLocked: () => false }, app, nativeChat: null, sshForward: { stop() {} }, isQuitting: false, setTimeout() {}, QUIT_SAVE_MS: 8000, logError: (_label, error) => { throw error; },
-    savePreferences() {}, saveBrowserSession: () => { saves++; return new Promise(resolve => { finish = resolve; }); },
-    hostComputer: { close: () => { closes++; } }, prefsSaver: { flush() {} },
-    modelAuthChild: null, tray: null, apiServer: null, clearInterval() {}, clearTimeout() {},
+test('the production quit wiring keeps teardown after window close and overrides unload vetoes only while quitting', async () => {
+  const listeners = {}, events = [];
+  const event = () => ({ preventDefault: () => events.push('prevent') });
+  let signalHandler, unloadHandler;
+  const app = {
+    on: (name, fn) => { listeners[name] = fn; },
+    quit: () => { events.push('quit'); listeners['before-quit']?.(event()); },
+    exit: code => events.push(`exit:${code}`),
+  };
+  let savingResolve;
+  const saving = new Promise(resolve => { savingResolve = resolve; });
+  const closingWindow = { isDestroyed: () => false, close: () => events.push('window-close') };
+  const context = vm.createContext({
+    BrowserWindow: { getAllWindows: () => [closingWindow] },
+    createQuitControl: require('../src/quit-control.cjs').createQuitControl,
+    app, process: { platform: 'darwin', on: (name, fn) => { if (name === 'SIGTERM') signalHandler = fn; } }, QUIT_SAVE_MS: 8000, QUIT_CLOSE_MS: 8000,
+    savePreferences: () => events.push('preferences'), saveBrowserSession: () => { events.push('session'); return saving; },
+    logError: (label, error) => events.push(`${label}:${error.message}`), isQuitting: false,
+    sshForward: { stop: () => events.push('tunnel') }, hostComputer: { close: () => events.push('host') }, prefsSaver: { flush: () => events.push('prefs-flush') },
+    modelAuthChild: null, nativeChat: null, tray: null, apiServer: null, clearInterval() {}, clearTimeout() {},
     pointerFeed: null, onlineTimer: 0, activityTimer: 0, idleTimer: 0, captchaTimer: 0, vpsTimer: 0, vpsMirrorTimer: 0, vpsMirrorDebounce: 0,
   });
-  const start = source.includes('  let browserQuitPending') ? '  let browserQuitPending' : "  app.on('before-quit',";
-  vm.runInContext(section(start, "  app.on('window-all-closed'"), context);
+  const allClosed = source.match(/  app\.on\('window-all-closed'.*\n/);
+  assert.ok(allClosed, 'the window-all-closed handler is present');
+  vm.runInContext(section('  const quitControl = createQuitControl({', "  app.on('window-all-closed'") + allClosed[0] + '\n;this.quitControl = quitControl;', context);
+  assert.equal(typeof signalHandler, 'function', 'SIGTERM is wired to the quit controller');
+  const contents = { on: (name, fn) => { if (name === 'will-prevent-unload') unloadHandler = fn; } };
+  listeners['web-contents-created']({}, contents);
+  assert.equal(typeof unloadHandler, 'function', 'every created web contents gets an unload-veto decision');
   let prevented = 0;
-  listener({ preventDefault: () => { prevented++; } });
-  listener({ preventDefault: () => { prevented++; } });
-  assert.equal(prevented, 2, 'quit must wait for storage');
-  assert.equal(saves, 1);
-  assert.equal(closes, 0, 'keep browser services alive while saving');
-  finish();
+  const unloadEvent = { preventDefault: () => { prevented++; } };
+  unloadHandler(unloadEvent);
+  assert.equal(prevented, 0, 'outside quit the page veto is left alone');
+
+  listeners['before-quit'](event());
+  assert.deepEqual(events, ['prevent', 'preferences', 'session']);
+  unloadHandler(unloadEvent);
+  assert.equal(prevented, 1, 'during quit the page cannot veto unloading');
+  assert.equal(events.includes('tunnel'), false, 'the SSH tunnel keeps running while the save and close are pending');
+  savingResolve();
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(closes, 1);
+  assert.deepEqual(events, ['prevent', 'preferences', 'session', 'window-close']);
+  assert.equal(events.includes('tunnel'), false, 'the resumed quit has not torn down before windows close');
+  listeners['window-all-closed']();
+  assert.deepEqual(events, ['prevent', 'preferences', 'session', 'window-close', 'quit']);
+  listeners['will-quit']();
+  assert.deepEqual(events, ['prevent', 'preferences', 'session', 'window-close', 'quit', 'tunnel', 'host', 'prefs-flush']);
   assert.equal(context.isQuitting, true);
 });
-
-for (const outcome of ['hangs', 'fails']) {
-  test(`quit still exits when saving browser sign-ins ${outcome}`, async () => {
-    // A keychain prompt nobody answers, or a denied one, must not keep the app from quitting.
-    let listener, closes = 0;
-    const timers = [], errors = [];
-    const app = { on: (_name, fn) => { listener = fn; }, quit: () => listener({ preventDefault() {} }) };
-    const context = vm.createContext({ vaultLock: { isLocked: () => false }, app, nativeChat: null, sshForward: { stop() {} }, isQuitting: false, setTimeout: (fn, ms) => timers.push({ fn, ms }), QUIT_SAVE_MS: 8000,
-      savePreferences() {}, saveBrowserSession: () => (outcome === 'hangs' ? new Promise(() => {}) : Promise.reject(new Error('denied'))),
-      logError: (label, error) => errors.push(`${label}: ${error.message}`),
-      hostComputer: { close: () => { closes++; } }, prefsSaver: { flush() {} },
-      modelAuthChild: null, tray: null, apiServer: null, clearInterval() {}, clearTimeout() {},
-      pointerFeed: null, onlineTimer: 0, activityTimer: 0, idleTimer: 0, captchaTimer: 0, vpsTimer: 0, vpsMirrorTimer: 0, vpsMirrorDebounce: 0,
-    });
-    vm.runInContext(section('  let browserQuitPending', "  app.on('window-all-closed'"), context);
-    listener({ preventDefault() {} });
-    await new Promise(resolve => setImmediate(resolve));
-    if (outcome === 'hangs') {
-      assert.equal(closes, 0, 'a save in progress gets its time');
-      assert.ok(timers.length === 1 && timers[0].ms <= 10000);
-      timers[0].fn();
-      await new Promise(resolve => setImmediate(resolve));
-    }
-    assert.equal(closes, 1);
-    assert.equal(errors.length, 1);
-  });
-}
 
 for (const driver of ['electron-updater', 'self']) {
   test(`${driver} waits for browser storage before exiting into the update`, async () => {

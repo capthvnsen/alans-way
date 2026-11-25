@@ -4,6 +4,8 @@ const bootTimer = require('./boot-timing.cjs').createBootTimer();
 bootTimer.mark('process-start');
 const { SSH_OPTIONS: TAILNET_SSH_OPTIONS, hermesWebappUrl } = require('./tailnet.cjs');
 const { createWebappSignIn, signInToWebapp, SIGN_IN_ERRORS } = require('./webapp-signin.cjs');
+const { createWebappLink, createLaunchWatch, launchFragment } = require('./webapp-link.cjs');
+const { chatOnlyLaunchFragment, chatOnlyTarget, installChatOnly, setChatOnly } = require('./webapp-chat-only.cjs');
 const { authorizeBot, approvalIdentity, registryFile } = require('./bot-auth.cjs');
 const { app, BrowserWindow, WebContentsView, webContents, ipcMain, Menu, Tray, Notification, dialog, clipboard, shell, nativeTheme, screen, nativeImage, session, powerMonitor, net, protocol, systemPreferences, safeStorage } = require('electron');
 const { ACCELERATORS } = require('./workspace-shortcuts.cjs');
@@ -20,6 +22,7 @@ const { createAvatarStore, AVATAR_SCHEME } = require('./avatar-store.cjs');
 const { sameOriginWindow, queueWithDeadline, resolveChatSurface, usableSurfaces, surfaceForBot, inboxRow, canvasStripTabs, keepBots, writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange, tailscaleSshHost, tailscaleSshHostAsync, createPointerFeed } = require('./shell-support.cjs');
 const { buildAgentPrompt } = require('./agent-prompt.cjs');
 const { shouldOnboard, pinOnboarding, cloudStep, nextCloudStep, setCloudStep } = require('./onboarding.cjs');
+const { ONBOARDING_SETUP_GUIDE_URL } = require('./onboarding-copy.cjs');
 const cloudClaim = require('./cloud-claim.cjs');
 const cloudStatus = require('./cloud-status.cjs');
 const cloudConnect = require('./cloud-connect.cjs');
@@ -33,6 +36,7 @@ const macUpdate = require('./mac-update.cjs');
 const setupCheck = require('./setup-check.cjs');
 const { createLog } = require('./main-log.cjs');
 const { armQuitWatchdog } = require('./update-quit.cjs');
+const { createQuitControl } = require('./quit-control.cjs');
 const releaseChannel = require('./release-channel.cjs');
 const { createNativeChat } = require('./native-chat.cjs');
 const { keyFiles, importKey } = require('./key-import.cjs');
@@ -159,9 +163,11 @@ let activeTabId = 'home', canvasTab = 'browser', activeVpsTabId = '', apiError =
 // shows the DOM surface (the Telegram view then measures to zero and hides);
 // 'native' shows Alan's native chat on the Hermes Sessions API.
 let canvasReturn = 'browser';
-let nativeChat = null, hermesHub = null, gatewayLink = null, chatTarget = 'telegram', webappStatus = 'unconfigured', webappTarget = '', webappSignInError = '', webappSignInTried = false, webappPrivate = false, canvasView = null, canvasPage = '';
+let nativeChat = null, hermesHub = null, gatewayLink = null, chatTarget = 'telegram', webappStatus = 'unconfigured', webappTarget = '', webappSignInError = '', webappSignInTried = false, webappPrivate = false, webappLinkTrying = false, webappLinkFailure = '', webappLinkStale = false, canvasView = null, canvasPage = '';
 // Hermes opens its API (8642) and Hermes Desktop (9120) only on the server's loopback: when a chat address points at this
 // computer and a server SSH login is saved, the app holds the port forward itself.
+const webappLink = createWebappLink({ run: sshRun, log: (text) => mainLog().write('hermes-webapp', text),
+  open: (link) => { const shown = chatTarget; try { openWebappLink(link); } finally { chatTarget = shown; } } });
 const sshForward = createSshForward({ spawn, onChange: () => {
   if (isQuitting) return;
   pushNativeState(); broadcast();
@@ -198,7 +204,7 @@ const BATCH_BUDGET_MS = 50000;
 let batchFlowMod;
 const batchFlow = new Proxy({}, { get: (_t, prop) => (batchFlowMod ||= require('./batch-flow.cjs'))[prop] });
 const FLOW = Symbol('batch-flow');
-const QUIT_SAVE_MS = 8000;
+const QUIT_SAVE_MS = 8000, QUIT_CLOSE_MS = 8000;
 const BROWSER_RESTORE_WAIT_MS = 5000;
 // What one queued tab task may hold the tab's queue for. An action may run a 50s batch plus a 30s wait, and the connector gives up at 90s.
 const TAB_ACTION_MS = 100000, TAB_READ_MS = 45000, CAPTURE_MS = 20000, CDP_COMMAND_MS = 15000;
@@ -246,7 +252,7 @@ const recordings = recorder.createRecordingStore(path.join(app.getPath('userData
 let pointerFeed, activityTimer, idleTimer, captchaTimer, onlineTimer;
 
 function readPreferences() {
-  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', hermesWebappUrl: '', chatSurface: '', nativeTransport: '', remotePlatform: 'linux', chatWidth: 490, showBots: true, showBrowser: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {}, browserExtensions: [], vpsBrowser: {}, agentIdleMinutes: 15, agentLastTabs: {}, canvasTabs: {}, chatSurfaces: {}, nativeSessions: {}, handoffs: [], downloads: [], updateSnoozedUntil: 0, releaseChannel: 'stable', vmUpdates: {}, versionCache: {}, desktopTrustedBots: [],
+  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', hermesWebappUrl: '', chatSurface: '', nativeTransport: '', remotePlatform: 'linux', chatWidth: 490, showBots: true, showBrowser: true, showHermesSidebar: false, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {}, browserExtensions: [], vpsBrowser: {}, agentIdleMinutes: 15, agentLastTabs: {}, canvasTabs: {}, chatSurfaces: {}, nativeSessions: {}, handoffs: [], downloads: [], updateSnoozedUntil: 0, releaseChannel: 'stable', vmUpdates: {}, versionCache: {}, desktopTrustedBots: [],
     overseerBots: String(process.env.HERMES_OVERSEER_BOTS || '').split(',').map((id) => id.trim()).filter((id) => id && id.length <= 100) };
   const file = path.join(app.getPath('userData'), 'preferences.json');
   let text;
@@ -573,7 +579,7 @@ function settingsWriteReceipt(entry) {
 const promptCacheTtl = () => prefs.promptCacheTtl === '1h' ? '1h' : '5m';
 function getState() {
   const state = { name: app.getName(), version: app.getVersion(), releaseChannel: prefs.releaseChannel, activeReleaseChannel, build: BUILD, buildBadge: describeBuild(BUILD), bots: avatarStore.publicBots().map(bot => ({ ...bot, activity: activity.get(bot.id), hue: botAccent(bot.id).hue })), order: prefs.order, hidden: prefs.hidden,
-    selectedBotId: prefs.selectedBotId, settingsFieldRevisions: { ...settingsFieldRevisions }, chatWidth: prefs.chatWidth, showBots: prefs.showBots, showBrowser: prefs.showBrowser, savedRemoteUrl: prefs.remoteUrl, remoteUrl: (() => { try { parseRemoteUrl(prefs.remoteUrl); return prefs.remoteUrl; } catch { return ''; } })(),
+    selectedBotId: prefs.selectedBotId, settingsFieldRevisions: { ...settingsFieldRevisions }, chatWidth: prefs.chatWidth, showBots: prefs.showBots, showBrowser: prefs.showBrowser, showHermesSidebar: prefs.showHermesSidebar === true, savedRemoteUrl: prefs.remoteUrl, remoteUrl: (() => { try { parseRemoteUrl(prefs.remoteUrl); return prefs.remoteUrl; } catch { return ''; } })(),
     remoteStatus, remoteControl: prefs.remoteControl === true, telegramStatus, tabs: [...tabs.values()].map(tab => describeTab(tab)).concat([...vpsTabs.values()]), cloud: cloudView(),
     vpsBrowser: prefs.vpsBrowser, vpsBrowserStatus, vpsBrowserError, handoffs: prefs.handoffs, continuedNotice, macSshHost: prefs.macSshHost || '',
     platform: process.platform, hostLabel: HOST_LABEL, remotePlatform: prefs.remotePlatform || 'linux',
@@ -593,7 +599,7 @@ function getState() {
     canvasTab: shownCanvas(), canvasStrip: canvasStripTabs(shownCanvas(), webappCanvas()), webappCanvas: webappCanvas(), terminals: terminals.ids(), terminalNote, tunnelNote: sshForward.note(), activeTabId: shownCanvas() === 'screen' ? 'vps' : shownTabId(), activeVpsTabId, browserTabHost: shownCanvas() === 'screen' && vpsTabs.has(activeVpsTabId) ? 'vps' : HOST_LABEL, browserContentsId: (() => { const contents = tabs.get(shownTabId())?.view?.webContents; return contents && !contents.isDestroyed() ? contents.id : null; })(), browserTabId: shownCanvas() === 'screen' && vpsTabs.has(activeVpsTabId) ? activeVpsTabId : activeTabId, avatarLibrary: avatarStore.publicLibrary(), avatarPreferences: prefs.avatarPreferences,
     locationDefault: prefs.locationDefault, sitePermissions: prefs.sitePermissions, extensions: extensionStore?.list() || [], downloads: downloadStore.list(),
     chatTarget, hermes: hermesSummary(), chatSurface: resolveChatSurface(prefs.chatSurface, webappStatus, !!nativeChat?.configured), hermesWebappUrl: prefs.hermesWebappUrl, webappStatus, nativeChat: nativeChat?.summary() || { configured: false }, nativeKeyFiles: keyFiles({ fs, home: os.homedir() }),
-    webappSignIn: webappTarget ? webappSignIn.username(new URL(webappTarget).origin) : '', webappSignInError,
+    webappSignIn: webappTarget ? webappSignIn.username(new URL(webappTarget).origin) : '', webappSignInError, webappPrivate, webappLinkTrying, webappLinkFailure, webappLinkStale,
     chatBotId: chatBotId(), hermesBot: builtinBot() ? { id: 'hermes', name: hermesBotName() } : null,
     recording: recording ? { tabId: recording.tabId, steps: recording.steps.length, startedAt: recording.startedAt } : null, recordings: recordings.list(),
     fullscreen: !!win && !win.isDestroyed() && win.isFullScreen(), api: { url: apiPort ? `http://127.0.0.1:${apiPort}` : '', ready: !!apiPort, error: apiError } };
@@ -755,25 +761,47 @@ function notifyWaiting(native) {
   }
   waitingBots = now;
 }
+const hermesChatTarget = (target) => prefs.showHermesSidebar === true ? target : chatOnlyTarget(target);
 function syncWebapp() {
-  if (chatTarget === 'webapp' && !webappView && webappStatus === 'reachable') createWebappView(webappTarget);
+  if (chatTarget === 'webapp' && !webappView && webappStatus === 'reachable') createWebappView(hermesChatTarget(webappTarget));
 }
 // A Webapp without sign-in opens only through the one-use link `hermes webapp --no-open`
 // prints; its credential then lives in this view's sessionStorage, never on disk here.
 function openWebappLink(link) {
-  let launch;
-  try {
-    const pasted = new URL(String(link).trim());
-    // The host prints its own address; a tunnel may forward it to another local port.
-    if (pasted.pathname.endsWith('/webapp/launch') && /^#ticket=[\w-]{43}(&|$)/.test(pasted.hash)) launch = new URL(`webapp/launch${pasted.hash}`, webappTarget);
-  } catch {}
-  if (!launch || webappStatus === 'unconfigured') throw new Error('Paste the one-use link that hermes webapp --no-open prints on the Hermes host.');
-  chatTarget = 'webapp';
+  if (webappStatus === 'unconfigured') throw new Error('Save the Hermes Desktop address first.');
+  if (!String(link ?? '').trim()) throw new Error('Nothing was pasted. Copy the one-use link that hermes webapp --no-open prints on the Hermes host, then paste it here.');
+  // The host prints its own address; a tunnel may forward it to another local port, so only the fragment is used.
+  const pasted = launchFragment(link);
+  const fragment = prefs.showHermesSidebar === true ? pasted : chatOnlyLaunchFragment(pasted);
+  if (!fragment) throw new Error('No one-use link was found in what was pasted. Copy the whole http://…/webapp/launch#ticket=… line that hermes webapp --no-open prints on the Hermes host.');
+  const launch = new URL(`webapp/launch${fragment}`, webappTarget);
+  chatTarget = 'webapp'; webappLinkStale = false;
   if (webappView) webappView.webContents.loadURL(launch.href).catch(() => {});
   else createWebappView(launch.href);
 }
 function createWebappView(url) {
-  webappView = guardedWebappView(url, (status) => { webappStatus = status; applyLayout(); broadcast(); });
+  webappView = guardedWebappView(url, (status) => { webappStatus = status; webappLinkTrying = false; webappLinkStale = false; applyLayout(); broadcast(); }, (view) => {
+    // The launch page never led anywhere: the ticket was already used or has expired. Drop the hidden view so the next link starts clean.
+    if (webappView !== view) return;
+    win.contentView.removeChildView(view); view.webContents.close(); webappView = null;
+    webappStatus = 'needs-link'; webappLinkTrying = false; webappLinkStale = true;
+    applyLayout(); broadcast();
+  });
+  installChatOnly(webappView.webContents, prefs.showHermesSidebar !== true);
+}
+// A one-use-link host: fetch the link over SSH once per episode, so the pane opens with no paste.
+// The link never leaves webappLink; only its plain failure reason is kept for the pane.
+function startWebappLink(target) {
+  const host = (prefs.vpsBrowser?.sshHost || '').trim();
+  if (!webappLink.wants({ target, host, needsLink: true })) return;
+  webappLinkTrying = true; webappLinkFailure = '';
+  webappLink.fetch({ host, canOpen: () => target === webappTarget && !webappView }).then((reason) => {
+    if (target !== webappTarget) return;
+    webappLinkFailure = reason;
+    if (reason || !webappView) webappLinkTrying = false;
+    broadcast();
+  });
+  setTimeout(() => { if (webappLinkTrying && target === webappTarget) { webappLinkTrying = false; broadcast(); } }, 35000).unref();
 }
 // The Canvas view shares the chat view's partition, so one cookie sign-in serves both.
 function syncCanvasView() {
@@ -823,21 +851,28 @@ function guardWebappContents(contents, origin) {
   contents.on('will-navigate', stay);
   contents.on('will-redirect', stay);
 }
-function guardedWebappView(url, report = () => {}) {
+function guardedWebappView(url, report = () => {}, onStaleLaunch = null) {
   const view = new WebContentsView({ webPreferences: WEBAPP_PREFERENCES });
   view.setBackgroundColor('#09090a');
   const contents = view.webContents;
   sitePermissions.install(contents.session, 'browser');
   guardWebappContents(contents, new URL(webappTarget).origin);
-  contents.on('did-navigate', (_event, url) => {
+  const launch = onStaleLaunch && createLaunchWatch({ onStale: () => onStaleLaunch(view) });
+  let reported = false;
+  const navigated = (url) => {
     const { pathname } = new URL(url);
     if (pathname.endsWith('/webapp/launch')) return;
+    launch?.disarm(); reported = true;
     const signIn = pathname.endsWith('/login');
     // One automatic try per sign-out, so a refused password can't loop or trip the throttle.
     if (!signIn) { webappSignInTried = false; webappSignInError = ''; }
     else if (!webappSignInTried) signInWebapp().catch(error => logError('hermes-webapp', error));
     report(signIn ? 'sign-in' : 'ready');
-  });
+  };
+  contents.on('did-navigate', (_event, url) => navigated(url));
+  // The Webapp may leave its launch page with history.replaceState, which is no did-navigate; only that first exit counts here.
+  contents.on('did-navigate-in-page', (_event, url, isMainFrame) => { if (isMainFrame && !reported) navigated(url); });
+  contents.on('did-stop-loading', () => { if (launch && !reported && new URL(contents.getURL() || 'about:blank').pathname.endsWith('/webapp/launch')) launch.arm(); });
   contents.on('did-fail-load', (_event, code, _text, _url, isMainFrame) => { if (isMainFrame && code !== -3) report('unreachable'); });
   win.contentView.addChildView(view);
   contents.loadURL(url).catch(() => {});
@@ -846,14 +881,14 @@ function guardedWebappView(url, report = () => {}) {
 // Signs in with the saved password and reloads the Webapp; on failure the Webapp's own
 // form stays up and the reason shows in Settings.
 async function signInWebapp() {
-  const target = webappTarget, saved = target && webappSignIn.read(new URL(target).origin);
+  const target = webappTarget, saved = target && !webappPrivate && webappSignIn.read(new URL(target).origin);
   if (!saved) return '';
   webappSignInTried = true;
   const failure = await signInToWebapp((url, init) => session.fromPartition(WEBAPP_PARTITION).fetch(url, init), target, saved);
   if (target !== webappTarget) return '';
   webappSignInError = failure && SIGN_IN_ERRORS[failure];
   // The Canvas view shares the partition, so it reopens its page with the new cookie too.
-  if (!failure) { webappView?.webContents.loadURL(target).catch(() => {}); canvasPage = ''; applyLayout(); }
+  if (!failure) { webappView?.webContents.loadURL(hermesChatTarget(target)).catch(() => {}); canvasPage = ''; applyLayout(); }
   broadcast();
   return webappSignInError;
 }
@@ -880,8 +915,9 @@ async function checkWebapp() {
   if (target !== webappTarget) return;
   webappStatus = !reachable ? 'unreachable' : needsLink && !webappView ? 'needs-link' : 'reachable';
   webappPrivate = needsLink;
+  if (webappStatus === 'needs-link') startWebappLink(target); else { webappLinkTrying = false; if (!needsLink) webappLinkFailure = ''; }
   if (chatTarget === 'telegram') applySurface();
-  if (reachable && webappView) webappView.webContents.loadURL(target).catch(() => {});
+  if (reachable && webappView) webappView.webContents.loadURL(hermesChatTarget(target)).catch(() => {});
   if (reachable && canvasView) canvasPage = '';
   syncWebapp();
   applyLayout(); broadcast();
@@ -2084,13 +2120,16 @@ async function cloudConnectOnce(diyHost, pending) {
     const remote = cloudConnect.parseComputerState((await sshRun(sshHost, cloudConnect.sshReadCommand('/var/lib/alan/state.json'))).out);
     if (!current()) return cancelled;
     if (remote?.state === 'failed') return { stage: 'failed', ok: false, detail: remote.error || 'The setup on the server failed.' };
-    const back = checkBrokerSetup();
-    if (!current()) return cancelled;
-    if (!back.ok) return { stage: 'path', ok: false, detail: back.detail };
-    if ((prefs.macSshHost || '').trim()) {
-      const path = await testAgentPath();
+    // Chatting needs neither check; both guard the browser transport, so they only gate a saved broker.
+    if ((prefs.vpsBrowser?.brokerSshHost || '').trim()) {
+      const back = checkBrokerSetup();
       if (!current()) return cancelled;
-      if (!path.ok) return { stage: 'path', ok: false, detail: path.detail };
+      if (!back.ok) return { stage: 'path', ok: false, detail: back.detail };
+      if ((prefs.macSshHost || '').trim()) {
+        const path = await testAgentPath();
+        if (!current()) return cancelled;
+        if (!path.ok) return { stage: 'path', ok: false, detail: path.detail };
+      }
     }
     delete cloud.existingModel;
     delete cloud.modelDetected;
@@ -2373,7 +2412,7 @@ function registerIpc() {
       case 'show-hermes': chatTarget = 'hermes'; broadcast(); break;
       case 'show-webapp': chatTarget = 'webapp'; syncWebapp(); broadcast(); break;
       case 'show-native': showSurface('native'); broadcast(); break;
-      case 'webapp-retry': await checkWebapp(); break;
+      case 'webapp-retry': webappLink.reset(); await checkWebapp(); break;
       case 'native-import-key': {
         const result = importKey({ name: value.name, fs, home: os.homedir(), safeStorage, readBack: () => loadNativePersisted().key,
           save: (key) => nativeChat.configure({ ...(parseBaseUrl(nativeChat.summary().address) || { baseUrl: 'http://127.0.0.1:8642', profile: '' }), key }) });
@@ -2382,6 +2421,7 @@ function registerIpc() {
       case 'webapp-link': openWebappLink(value.url); break;
       case 'webapp-sign-in': {
         if (!webappTarget) throw new Error('Save the Hermes Desktop address first.');
+        if (webappPrivate) throw new Error('This server opens with a one-use link, so it needs no username or password.');
         webappSignIn.save(new URL(webappTarget).origin, value.username, value.password);
         webappSignInError = ''; webappSignInTried = false; broadcast();
         const failure = webappView ? await signInWebapp() : (await checkWebapp(), '');
@@ -2391,7 +2431,7 @@ function registerIpc() {
       case 'webapp-sign-out':
         webappSignIn.forget(); webappSignInError = ''; webappSignInTried = true;
         await session.fromPartition(WEBAPP_PARTITION).clearStorageData();
-        webappView?.webContents.loadURL(webappTarget).catch(() => {});
+        webappView?.webContents.loadURL(hermesChatTarget(webappTarget)).catch(() => {});
         canvasPage = ''; applyLayout(); broadcast(); break;
       case 'sort-bots': prefs.order = Array.isArray(value.ids) ? value.ids.filter((id) => prefs.bots.some((bot) => bot.id === id)) : prefs.order; savePreferences(); break;
       case 'bot-sort': if (['recent', 'alpha', 'manual'].includes(value.mode)) { prefs.botSort = value.mode; savePreferences(); } break;
@@ -2435,6 +2475,7 @@ function registerIpc() {
         if (value.remotePlatform !== undefined) next.remotePlatform = value.remotePlatform === 'mac' ? 'mac' : 'linux';
         if (typeof value.showBots === 'boolean') next.showBots = value.showBots;
         if (typeof value.showBrowser === 'boolean') next.showBrowser = value.showBrowser;
+        if (typeof value.showHermesSidebar === 'boolean') next.showHermesSidebar = value.showHermesSidebar;
         if (typeof value.macSshHost === 'string') next.macSshHost = value.macSshHost.trim();
         if (typeof value.autoOpenLinks === 'boolean') next.autoOpenLinks = value.autoOpenLinks;
         if (typeof value.autoTakeover === 'boolean') next.autoTakeover = value.autoTakeover;
@@ -2457,15 +2498,17 @@ function registerIpc() {
         }
         if (typeof value.hermesWebappUrl === 'string') {
           next.hermesWebappUrl = hermesWebappUrl(value.hermesWebappUrl);
-          if (!next.hermesWebappUrl && value.hermesWebappUrl.trim()) throw new Error('Enter the address as https://your-machine.your-tailnet.ts.net');
+          if (!next.hermesWebappUrl && value.hermesWebappUrl.trim()) throw new Error('Enter an https://….ts.net address, or http://127.0.0.1:9120 together with your server’s SSH address.');
         }
         if (Number.isFinite(value.chatWidth)) next.chatWidth = Math.max(320, Math.min(680, value.chatWidth));
         for (const field of Object.keys(settingsFieldRevisions)) {
           if (Object.hasOwn(value, field) || (field === 'remoteUrl' && value.vpsBrowser && typeof value.vpsBrowser === 'object')) settingsFieldRevisions[field]++;
         }
         const addressChanged = next.hermesWebappUrl !== prefs.hermesWebappUrl;
+        const sidebarChanged = next.showHermesSidebar !== prefs.showHermesSidebar;
         persistSettingsPreferences(next);
-        if (addressChanged) { webappSignIn.forget(); webappSignInError = ''; webappSignInTried = false; checkWebapp().catch(error => logError('hermes-webapp', error)); }
+        if (sidebarChanged && webappView && !webappView.webContents.isDestroyed()) setChatOnly(webappView.webContents, next.showHermesSidebar !== true);
+        if (addressChanged) { webappSignIn.forget(); webappSignInError = ''; webappSignInTried = false; webappLink.reset(); webappLinkFailure = ''; checkWebapp().catch(error => logError('hermes-webapp', error)); }
         if (nativeConfig) nativeChat.configure(nativeConfig);
         if (Object.hasOwn(value, 'compactBeforeSend') || Object.hasOwn(value, 'promptCacheTtl')) pushNativeState();
         if (Object.hasOwn(value, 'chatSurface') || nativeConfig || (addressChanged && !next.hermesWebappUrl)) applySurface();
@@ -2686,6 +2729,7 @@ function registerIpc() {
       }
       case 'open-download-page': shell.openExternal(`https://openalan.com/download/${HOST_LABEL === 'windows' ? 'windows' : 'mac'}`); break;
       case 'open-release-notes': shell.openExternal(`https://github.com/capthvnsen/alans-way/releases/tag/${app.getVersion().includes('-nightly.') ? `nightly-${app.getVersion().split('-nightly.')[1]}` : `v${app.getVersion()}`}`); break;
+      case 'open-setup-guide': await shell.openExternal(ONBOARDING_SETUP_GUIDE_URL); break;
       case 'dismiss-bundle-warning': bundleWarningDismissed = true; broadcast(); break;
       case 'dismiss-updated': update.justUpdatedFrom = ''; break;
       case 'onboarding-done': prefs.onboarded = true; savePreferences(); break;
@@ -4215,22 +4259,26 @@ else {
     showWindow();
   });
   app.on('activate', showWindow);
-  let browserQuitPending = false, browserQuitReady = false;
-  app.on('before-quit', event => {
-    if (!browserQuitReady) {
-      event.preventDefault();
-      if (!browserQuitPending) {
-        savePreferences();
-        isQuitting = true;
-        browserQuitPending = true;
-        // A keychain prompt nobody answers, or a denied one, must not keep the app from quitting.
-        Promise.race([saveBrowserSession(), new Promise((_, reject) => setTimeout(() => reject(new Error('Saving browser sign-ins timed out.')), QUIT_SAVE_MS))])
-          .catch(error => logError('browser-save', error))
-          .then(() => { browserQuitReady = true; app.quit(); });
-      }
-      return;
-    }
-    isQuitting = true; sshForward.stop(); hostComputer?.close(); try { modelAuthChild?.kill(); } catch {} pointerFeed?.stop(); clearTimeout(activityTimer); clearInterval(idleTimer); clearInterval(captchaTimer); clearTimeout(onlineTimer); clearTimeout(vpsTimer); clearInterval(vpsMirrorTimer); clearTimeout(vpsMirrorDebounce); prefsSaver.flush(); nativeChat?.flush(); tray?.destroy(); apiServer?.close();
+  const quitControl = createQuitControl({
+    saveMs: QUIT_SAVE_MS, closeMs: QUIT_CLOSE_MS,
+    begin: () => { savePreferences(); isQuitting = true; },
+    save: () => saveBrowserSession(),
+    close: () => {
+      const windows = BrowserWindow.getAllWindows().filter(window => !window.isDestroyed());
+      for (const window of windows) if (!window.isDestroyed()) try { window.close(); } catch {}
+      return windows.length > 0;
+    },
+    quit: () => app.quit(),
+    exit: code => app.exit(code),
+    teardown: () => { isQuitting = true; sshForward.stop(); hostComputer?.close(); try { modelAuthChild?.kill(); } catch {} pointerFeed?.stop(); clearTimeout(activityTimer); clearInterval(idleTimer); clearInterval(captchaTimer); clearTimeout(onlineTimer); clearTimeout(vpsTimer); clearInterval(vpsMirrorTimer); clearTimeout(vpsMirrorDebounce); prefsSaver.flush(); nativeChat?.flush(); tray?.destroy(); apiServer?.close(); },
+    onSaveError: error => logError('browser-save', error),
+    onTeardownError: error => logError('quit-teardown', error),
   });
-  app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
+  app.on('web-contents-created', (_event, contents) => {
+    contents.on('will-prevent-unload', event => { if (quitControl.overrideUnload()) event.preventDefault(); });
+  });
+  app.on('before-quit', event => quitControl.beforeQuit(event));
+  app.on('will-quit', () => quitControl.willQuit());
+  process.on('SIGTERM', () => quitControl.signal());
+  app.on('window-all-closed', () => { if (!quitControl.windowAllClosed() && process.platform !== 'darwin') app.quit(); });
 }

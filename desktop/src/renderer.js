@@ -38,6 +38,7 @@ function errorBadge(reason) {
   return badge;
 }
 const SURFACE_OF = { telegram: 'telegram', webapp: 'hermes-desktop', native: 'native' };
+const NATIVE_CHAT_LABEL = window.GatewayList.NATIVE_CHAT_LABEL, NATIVE_CHAT_BETA = window.GatewayList.nativeChatBetaLabel();
 // Gateway logos, each carrying its name for assistive technology where it stands alone.
 const GATEWAY_LOGOS = {
   telegram: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.6 4.3 3.7 10.8c-.8.3-.8 1.4 0 1.7l4.3 1.6 1.7 5.2c.2.7 1.1.9 1.6.4l2.4-2.3 4.4 3.2c.6.4 1.4.1 1.6-.6L22.1 5.5c.2-.9-.7-1.5-1.5-1.2ZM8 14.1 20.2 6.6"/></svg>',
@@ -155,29 +156,42 @@ function renderBotActivity(row, bot) {
   open.setAttribute('aria-label', `${open.dataset.label}${working ? ', working' : ''}`);
   open.title = working ? bot.activity.label || '' : '';
 }
-// The chat header's menu: which of this bot's gateways to show (a check beside the one on screen), then its Hermes Desktop pages.
+// The chat header's menu: which of this bot's gateways to show (a check beside the one on screen), its Hermes
+// Desktop sidebar preference while that surface is up, then its Hermes Desktop pages.
+const chatMenuKey = (item) => item?.dataset.gateway || item?.dataset.page || (item?.dataset.sidebar ? 'sidebar' : '');
 function renderChatMenu() {
-  const menu = $('chat-menu'), { gateways, pages, shown, unread } = chatMenu;
-  if (!gateways.length && !pages) { setChatMenu(false); return; }
+  const menu = $('chat-menu'), { gateways, pages, shown, unread, sidebar } = chatMenu;
+  if (!gateways.length && !pages && !sidebar) { setChatMenu(false); return; }
   if (menu.classList.contains('hidden')) return;
-  const focusedItem = menu.contains(document.activeElement) ? document.activeElement : null, focusedKey = focusedItem?.dataset.gateway || focusedItem?.dataset.page;
+  // Every state update lands here. Rebuilding identical buttons between a press and its release loses the click.
+  const signature = JSON.stringify([gateways, pages, shown, unread, sidebar, state?.showHermesSidebar === true]);
+  if (menu.dataset.signature === signature && menu.childElementCount) return;
+  menu.dataset.signature = signature;
+  const focusedItem = menu.contains(document.activeElement) ? document.activeElement : null, focusedKey = chatMenuKey(focusedItem);
   const item = (role, label) => { const button = element('button', 'chat-menu-item'); button.type = 'button'; button.tabIndex = -1; button.setAttribute('role', role); button.append(element('span', 'chat-menu-label', label)); return button; };
+  const check = (button) => { const mark = element('span', 'chat-menu-check', '✓'); mark.setAttribute('aria-hidden', 'true'); button.append(mark); };
   menu.replaceChildren();
   for (const id of gateways) {
     const button = item('menuitemradio', window.GatewayList.labelOf(id)), logo = element('span', 'gateway-logo');
     button.dataset.gateway = id; button.setAttribute('aria-checked', String(id === shown));
     logo.innerHTML = GATEWAY_LOGOS[id]; button.prepend(logo);
     if (unread.includes(id)) button.append(element('span', 'unread'), element('span', 'sr-only', ', unread'));
-    const check = element('span', 'chat-menu-check', '✓'); check.setAttribute('aria-hidden', 'true'); button.append(check);
+    check(button);
     menu.append(button);
   }
-  if (gateways.length && pages) { const rule = element('div', 'chat-menu-rule'); rule.setAttribute('role', 'separator'); menu.append(rule); }
+  if (sidebar) {
+    const button = item('menuitemcheckbox', 'Show Hermes sidebar');
+    button.dataset.sidebar = '1'; button.setAttribute('aria-checked', String(state?.showHermesSidebar === true));
+    check(button);
+    menu.append(button);
+  }
+  if ((gateways.length || sidebar) && pages) { const rule = element('div', 'chat-menu-rule'); rule.setAttribute('role', 'separator'); menu.append(rule); }
   if (pages) for (const [page, label] of [['settings', 'Bot settings'], ['cron', 'Cron jobs']]) { const button = item('menuitem', label); button.dataset.page = page; menu.append(button); }
-  if (focusedKey) [...menu.children].find(child => (child.dataset.gateway || child.dataset.page) === focusedKey)?.focus({ preventScroll: true });
+  if (focusedKey) [...menu.children].find(child => chatMenuKey(child) === focusedKey)?.focus({ preventScroll: true });
 }
 function setChatMenu(open, focus = 'checked') {
   const menu = $('chat-menu'), was = !menu.classList.contains('hidden');
-  if (open && !chatMenu.gateways.length && !chatMenu.pages) open = false;
+  if (open && !chatMenu.gateways.length && !chatMenu.pages && !chatMenu.sidebar) open = false;
   menu.classList.toggle('hidden', !open); $('chat-name').classList.toggle('active', open);
   if ($('chat-name').getAttribute('aria-haspopup')) $('chat-name').setAttribute('aria-expanded', String(open));
   if (open) {
@@ -210,12 +224,23 @@ function tabIcon(tab) {
   return icon;
 }
 function tabStripEntries() { return state.tabs.filter(tab => tab.host !== 'vps' || tab.handback?.state === 'awaiting_human'); }
+function tabStripSignature(entries) {
+  return JSON.stringify([
+    entries.map(tab => [tab.id, tab.host, tab.title, tab.favicon, tab.loading, tab.controller, tab.agentHue, tab.agentBusy, tab.handback?.state, tab.botId]),
+    state.canvasTab, state.browserTabId, state.browserTabHost, state.tabs.some(item => item.id === state.browserTabId),
+    state.bots.map(bot => [bot.id, bot.name]), state.hostLabel, state.remotePlatform,
+  ]);
+}
 function renderTabs() {
   const container = $('tabs'), focused = document.activeElement.closest('.tab');
   const focusedId = focused?.dataset.tabId, focusedHost = focused?.dataset.host, focusedClose = document.activeElement.classList.contains('tab-close');
   const focusedIndex = focused ? [...container.children].indexOf(focused) : -1;
+  const entries = tabStripEntries(), signature = tabStripSignature(entries);
+  // State broadcasts land here many times a second; replacing an unchanged tab
+  // between mouse down and mouse up loses the click.
+  if (container.dataset.signature === signature) return;
+  container.dataset.signature = signature;
   container.replaceChildren();
-  const entries = tabStripEntries();
   entries.forEach((tab, index) => {
     const selected = state.canvasTab === 'browser' && state.browserTabId === tab.id && state.browserTabHost === tab.host;
     const node = element('div', `tab${selected ? ' active' : ''}`); node.setAttribute('role', 'presentation'); node.dataset.tabId = tab.id; node.dataset.host = tab.host;
@@ -283,8 +308,11 @@ function setTabsPanel(open) {
 }
 function renderTabsPanel() {
   const panel = $('tabs-panel'), focusedRow = document.activeElement?.closest('.tabs-panel-row'), focusedTab = focusedRow?.dataset.tabId, focusedHost = focusedRow?.dataset.host;
+  const entries = tabStripEntries(), signature = tabStripSignature(entries);
+  if (panel.dataset.signature === signature) return;
+  panel.dataset.signature = signature;
   panel.replaceChildren();
-  for (const tab of tabStripEntries()) {
+  for (const tab of entries) {
     const selected = state.browserTabId === tab.id && state.browserTabHost === tab.host;
     const row = element('div', `tabs-panel-row${selected ? ' active' : ''}`); row.dataset.tabId = tab.id; row.dataset.host = tab.host;
     const pick = element('button', 'tabs-panel-select'); pick.setAttribute('role', 'menuitemradio'); pick.setAttribute('aria-checked', String(selected));
@@ -478,11 +506,11 @@ function render(next) {
   const chatName = bot?.name || (state.chatBotId === 'hermes' ? state.hermesBot?.name : '');
   $('chat-title').textContent = hermesActive ? (hermesSelected?.title || `Hermes${state.hermes?.target ? ` · ${state.hermes.target.label}` : ''}`)
     : chatName || (webappActive ? 'Hermes Desktop' : nativeActive ? 'Alan' : 'Telegram');
-  // The name opens a menu: this bot's gateways when it has several, then its Hermes Desktop pages (Bot settings, Cron jobs). With neither it is plain text.
+  // The name opens a menu: this bot's gateways when it has several, the Hermes sidebar switch on that surface, then its Hermes Desktop pages. With none it is plain text.
   const chatId = state.chatBotId ?? state.selectedBotId, chatInbox = state.inbox || {}, connected = chatInbox[chatId]?.gateways || [], shown = shownGateway(chatId);
   const unread = unreadOrder(chatId, connected.filter(gateway => unreadOn(chatId, bot, gateway, chatInbox)));
-  chatMenu = { id: chatId, shown, unread, gateways: connected.length > 1 ? connected : [], pages: !!state.webappCanvas && !!chatName && connected.includes('hermes-desktop') };
-  const otherUnread = chatMenu.gateways.length ? unread.filter(gateway => gateway !== shown) : [], menuUsable = chatMenu.gateways.length > 0 || chatMenu.pages;
+  chatMenu = { id: chatId, shown, unread, gateways: connected.length > 1 ? connected : [], pages: !!state.webappCanvas && !!chatName && connected.includes('hermes-desktop'), sidebar: shown === 'hermes-desktop' };
+  const otherUnread = chatMenu.gateways.length ? unread.filter(gateway => gateway !== shown) : [], menuUsable = chatMenu.gateways.length > 0 || chatMenu.pages || chatMenu.sidebar;
   $('chat-name').disabled = !menuUsable; $('chat-name').classList.toggle('openable', menuUsable);
   fillChips($('chat-chips'), otherUnread);
   if (menuUsable) {
@@ -769,6 +797,21 @@ function renderOnboarding(show) {
   card.append(element('p', 'onboarding-step', `Step ${onboardingStep} of 3`));
   if (onboardingStep === 1) {
     card.append(element('h2', '', 'Welcome to Alan’s Workspace'), element('p', 'settings-note', 'Three short steps connect your Hermes agent to this computer.'));
+    const copy = ONBOARDING_PREREQUISITES;
+    let claimInput;
+    const prerequisites = element('div', 'checklist');
+    const title = element('p', 'settings-note'); title.append(element('strong', '', copy.title));
+    prerequisites.append(title, element('p', 'settings-note', copy.intro));
+    const serverLine = element('p', 'check-item');
+    serverLine.append(document.createTextNode(`${copy.server} `),
+      button(copy.serverGuide, 'link-button', () => command('open-setup-guide')),
+      document.createTextNode(' · '),
+      button(copy.serverPath, 'link-button', () => command('cloud-diy')));
+    const claimLine = element('p', 'check-item');
+    claimLine.append(document.createTextNode(`${copy.claim} `),
+      button(copy.claimPath, 'link-button', () => claimInput.focus()));
+    prerequisites.append(serverLine, claimLine);
+    card.append(prerequisites);
     // A failed deep-link claim lands here: explain it instead of showing a
     // silent ordinary wizard.
     if (cloud.error) card.append(element('p', 'settings-note', cloud.error));
@@ -782,7 +825,7 @@ function renderOnboarding(show) {
     }
     const claimWrap = element('div', 'field'), claimLabel = element('label', '', 'Have a claim code from openalan.com?');
     claimLabel.htmlFor = 'ob-claim-code';
-    const claimInput = element('input');
+    claimInput = element('input');
     claimInput.id = 'ob-claim-code'; claimInput.placeholder = 'Paste your claim code or link'; claimInput.autocomplete = 'off';
     const claimButton = button('Claim computer', 'secondary-button', async () => {
       claimButton.disabled = true;
@@ -791,7 +834,6 @@ function renderOnboarding(show) {
     });
     claimWrap.append(claimLabel, claimInput, claimButton);
     card.append(claimWrap);
-    card.append(button('Use my own server', 'link-button', () => command('cloud-diy')));
     actions.append(button('Skip setup', 'secondary-button', finish), button('Next', 'primary-button', () => go(2)));
   } else if (onboardingStep === 2) {
     card.append(element('h2', '', 'Give your agent this prompt'));
@@ -1379,7 +1421,7 @@ const SETTINGS_CATEGORIES = [
 ];
 const SETTINGS_SECTIONS = [
   { id: 'keyboard', category: 'general', title: 'Keyboard shortcuts', description: 'Find the keys for moving between agents, browser tabs and dialogs.', words: 'keyboard navigation keys guide shortcuts search', mount(body) { const button = element('button', 'secondary-button', 'Keyboard shortcuts'); button.id = 'settings-shortcuts'; button.onclick = showShortcuts; body.append(button); } },
-  { id: 'chat-surface', category: 'general', title: 'Chat surface', description: 'Choose which chat an agent opens on first: Telegram, Hermes Desktop or Alan’s native chat.', words: 'telegram hermes desktop webapp chat surface tailscale address sign in compact context summarise idle cache hour minutes', mount: mountChatSurface },
+  { id: 'chat-surface', category: 'general', title: 'Chat surface', description: `Choose which chat an agent opens on first: Telegram, Hermes Desktop or ${NATIVE_CHAT_LABEL}.`, words: 'telegram hermes desktop webapp chat surface tailscale address sign in compact context summarise idle cache hour minutes', mount: mountChatSurface },
   { id: 'tab-behavior', category: 'general', title: 'Links and tab control', description: 'Choose how links from bot chats open and when bots can take back browser tabs.', words: 'automatic takeover auto open links control browser hand back', mount: mountTabBehavior },
   { id: 'bot-appearance', category: 'bots', title: 'Bot appearance', description: 'Choose a marble avatar or import an image for your selected bot.', words: 'avatars image customize appearance eyes', mount(body) { const button = element('button', 'secondary-button', 'Customize bot avatars'); button.onclick = () => openSettingsDetail(() => showAvatarEditor()); body.append(button, element('p', 'settings-note', 'Eyes follow your mouse only while Telegram reports activity.')); } },
   { id: 'primary-bot', category: 'bots', title: 'Primary bot', description: 'Pin one bot at the top of your sidebar. Without a preference, the overseer bot is used.', words: 'default primary pinned order sidebar', mount: mountPrimaryBot },
@@ -1753,16 +1795,17 @@ function openSettingsDetail(open) {
 const chatSurfaceDrafts = {};
 function mountChatSurface(body) {
   const row = element('div', 'setting-row'), surface = element('select'); surface.id = 'settings-chat-surface'; surface.setAttribute('aria-label', 'Chat surface');
-  for (const [value, label] of [['telegram', 'Telegram'], ['hermes-desktop', 'Hermes Desktop'], ['native', 'Alan’s native chat']]) { const option = element('option', '', label); option.value = value; surface.append(option); }
+  for (const [value, label] of [['telegram', 'Telegram'], ['hermes-desktop', 'Hermes Desktop'], ['native', NATIVE_CHAT_LABEL]]) { const option = element('option', '', label); option.value = value; surface.append(option); }
   row.append(element('span', '', 'Default chat surface'), surface); body.append(row);
-  body.append(element('p', 'settings-note', 'Each agent remembers the chat you last opened for it in the agent list, under Telegram, Hermes or Alan’s Way. This sets the one it opens on until you pick. Switching keeps every chat open in the background.'));
+  if (NATIVE_CHAT_BETA) body.append(element('p', 'settings-note', `${NATIVE_CHAT_BETA}: Telegram and Hermes Desktop are the stable chat surfaces.`));
+  body.append(element('p', 'settings-note', `Each agent remembers the chat you last opened for it in the agent list, under Telegram, Hermes or ${NATIVE_CHAT_LABEL}. This sets the one it opens on until you pick. Switching keeps every chat open in the background.`));
   const surfaceStatus = settingsStatus(body);
   surface.onchange = async () => { await runSettingsAction(surface, surfaceStatus, () => api.command('settings', { chatSurface: surface.value }), 'Saving…', 'Chat surface saved.'); surface.value = state.chatSurface; };
   body.append(element('h4', 'settings-subheading', 'Hermes conversations'), element('p', 'settings-note', 'Talk to a Hermes backend (hermes serve) directly. Set up the backend, start a session or resume a saved one there.'));
   const openHermes = element('button', 'secondary-button', 'Open Hermes conversations'); openHermes.id = 'settings-open-hermes'; body.append(openHermes);
   openHermes.onclick = () => { closeModal(); command('show-hermes'); };
   body.append(element('h4', 'settings-subheading', 'Hermes Desktop'));
-  const address = settingsField(body, 'settings-webapp-url', 'Address', state.hermesWebappUrl, 'https://your-machine.your-tailnet.ts.net'); address.setAttribute('aria-label', 'Hermes Desktop address');
+  const address = settingsField(body, 'settings-webapp-url', 'Address', state.hermesWebappUrl, 'https://….ts.net or http://127.0.0.1:9120'); address.setAttribute('aria-label', 'Hermes Desktop address');
   const save = element('button', 'secondary-button', 'Save address'); body.append(save);
   const saveStatus = settingsStatus(body);
   save.onclick = async () => { const reply = await runSettingsAction(save, saveStatus, () => api.command('settings', { hermesWebappUrl: address.value }), 'Saving…', 'Address saved.'); if (reply.ok) clean(address); };
@@ -1777,8 +1820,10 @@ function mountChatSurface(body) {
   };
   signOut.onclick = () => runSettingsAction(signOut, signInStatus, () => api.command('webapp-sign-out'), 'Signing out…', 'Signed out. The saved password is gone from this computer.');
   const status = element('p', 'connection-state'); status.id = 'settings-webapp-status'; body.append(status);
-  body.append(element('p', 'settings-note', 'On your Hermes server, run scripts/webapp-signin.sh from alans-way as the user that runs Hermes. It prints the address to enter here and writes the username and password to webapp-signin.txt on the server, never to the screen.'));
-  body.append(element('h4', 'settings-subheading', 'Alan’s native chat'));
+  const signInNote = element('p', 'settings-note', 'On your Hermes server, run scripts/webapp-signin.sh from alans-way as the user that runs Hermes. It prints the address to enter here and writes the username and password to webapp-signin.txt on the server, never to the screen.');
+  const linkNote = element('p', 'settings-note', 'This server opens with a one-use link that Workspace fetches over SSH, so no username or password is needed.'); linkNote.id = 'settings-webapp-link-note';
+  body.append(signInNote, linkNote);
+  body.append(element('h4', 'settings-subheading', NATIVE_CHAT_LABEL));
   const nativeAddress = settingsField(body, 'settings-native-url', 'Address', state.nativeChat?.address, 'http://127.0.0.1:8642'); nativeAddress.setAttribute('aria-label', 'Native chat address');
   const nativeKey = settingsField(body, 'settings-native-key', 'API key', '', ''); nativeKey.type = 'password';
   const clean = (field) => { delete field.dataset.dirty; delete chatSurfaceDrafts[field.id]; };
@@ -1825,6 +1870,8 @@ function mountChatSurface(body) {
       button.textContent = firstRun && !button.hidden ? 'Import saved key and connect' : `Import saved key from ~/.config/alans-way/${button.dataset.name}-api-key`;
     }
     nativeImport.hidden = !files.length;
+    for (const node of [username.parentElement, password.parentElement, signIn, signOut, signInStatus, signInNote]) node.hidden = !!state.webappPrivate;
+    linkNote.hidden = !state.webappPrivate;
     status.textContent = state.webappStatus === 'unconfigured' ? 'Not set up. Enter the address of your Hermes server above.' : webappStatusText();
     if (document.activeElement !== ttl) ttl.value = state.promptCacheTtl;
     compact();
@@ -2160,7 +2207,8 @@ $('chat-menu').onclick = (event) => {
   const item = event.target.closest('[role^=menuitem]');
   if (!item) return;
   setChatMenu(false); $('chat-name').focus({ preventScroll: true });
-  if (!item.dataset.gateway) command('canvas-bot-pages', { tab: item.dataset.page });
+  if (item.dataset.sidebar) command('settings', { showHermesSidebar: !(state.showHermesSidebar === true) });
+  else if (!item.dataset.gateway) command('canvas-bot-pages', { tab: item.dataset.page });
   else if (item.dataset.gateway !== chatMenu.shown) command('open-bot', { id: chatMenu.id, surface: item.dataset.gateway });
 };
 $('canvas-tabs').onclick = (event) => { const tab = event.target.closest('[data-canvas]')?.dataset.canvas; if (!tab) return; terminalFocus = tab === 'terminal'; command('canvas-tab', { tab, start: tab === 'terminal' }); };
@@ -2292,25 +2340,39 @@ async function hermesCommand(name, value = {}) {
   catch (error) { toast(window.HermesView.commandErrorMessage(error)); return null; }
 }
 const WEBAPP_HOST_CHECK = 'On the Hermes host, run: hermes webapp --status. It says whether webapp.enabled is on, whether sign-in is set up and whether the bundle is built.';
+const WEBAPP_NEEDS_SSH = 'This address needs a connection to your server. Save your server’s SSH address in Settings under Agent machine.';
+let webappLinkDraft = '';
 function webappStatusText() {
   const url = state.hermesWebappUrl;
+  // The app opens a tunnel only when an SSH address is saved, so a loopback address without one can never connect.
+  const noTunnel = /^http:\/\/(127\.0\.0\.1|localhost)[:/]/i.test(url || '') && !state.tunnelNote && !(state.vpsBrowser?.sshHost || '').trim();
   return { unconfigured: 'Hermes Desktop has no address yet. Add it in Settings under Chat surface.',
-    checking: `Checking ${url}…`, reachable: `Opening ${url}…`, unreachable: `${state.tunnelNote || `Can't reach ${url}.`} ${WEBAPP_HOST_CHECK}`,
-    'needs-link': 'This Hermes has no sign-in, so it opens only with a one-use link. On the Hermes host, run hermes webapp --no-open and paste the link in the chat pane within 60 seconds. You need a new link each time Workspace restarts.',
+    checking: `Checking ${url}…`, reachable: `Opening ${url}…`, unreachable: noTunnel ? `Can't reach ${url}. ${WEBAPP_NEEDS_SSH}` : `${state.tunnelNote || `Can't reach ${url}.`} ${WEBAPP_HOST_CHECK}`,
+    'needs-link': state.webappLinkTrying ? `Opening ${url}…` : `${state.webappLinkStale ? 'That link was already used or has expired. Get a new one. ' : state.webappLinkFailure ? `Workspace couldn't fetch the link itself: ${state.webappLinkFailure}. ` : ''}This Hermes has no sign-in, so it opens only with a one-use link. On the Hermes host, run hermes webapp --no-open and paste the link in the chat pane within 60 seconds. You need a new link each time Workspace restarts.`,
     'sign-in': state.webappSignInError || (state.webappSignIn ? `Signing in as ${state.webappSignIn}…` : 'Sign in inside the chat pane, or save the username and password from webapp-signin.txt in Settings under Chat surface so Workspace signs in for you.'),
-    ready: state.webappSignIn ? `Connected and signed in as ${state.webappSignIn}.` : 'Connected and signed in.' }[state.webappStatus] || '';
+    ready: state.webappSignIn && !state.webappPrivate ? `Connected and signed in as ${state.webappSignIn}.` : 'Connected and signed in.' }[state.webappStatus] || '';
 }
 function renderWebappHelp() {
-  const help = $('webapp-help'), key = JSON.stringify([state.webappStatus, state.hermesWebappUrl, state.webappSignIn, state.webappSignInError]);
+  const help = $('webapp-help'), key = JSON.stringify([state.webappStatus, state.hermesWebappUrl, state.webappSignIn, state.webappSignInError, state.webappLinkTrying, state.webappLinkFailure, state.webappLinkStale]);
   if (help.dataset.key === key) return;
   help.dataset.key = key;
   help.replaceChildren(element('h2', '', 'Hermes Desktop'), element('p', 'settings-note', webappStatusText()));
-  if (state.webappStatus === 'needs-link') {
+  if (state.webappStatus === 'needs-link' && !state.webappLinkTrying) {
     const link = element('input'); link.id = 'webapp-link'; link.autocomplete = 'off'; link.spellcheck = false;
     link.placeholder = 'http://127.0.0.1:9120/webapp/launch#ticket=…'; link.setAttribute('aria-label', 'One-use link');
-    const open = element('button', 'primary-button', 'Open'), field = element('div', 'field'); field.append(link);
-    open.onclick = () => command('webapp-link', { url: link.value }).finally(() => { link.value = ''; });
-    help.append(field, open);
+    // The pane is rebuilt when the status moves (a recheck, a failed try), so the pasted text lives outside the input.
+    link.value = webappLinkDraft; link.oninput = () => { webappLinkDraft = link.value; };
+    const open = element('button', 'primary-button', 'Open'), field = element('div', 'field'), problem = element('p', 'settings-note'); field.append(link);
+    problem.setAttribute('role', 'alert');
+    const send = async () => {
+      if (open.disabled) return;
+      open.disabled = true; problem.textContent = '';
+      try { await api.command('webapp-link', { url: link.value }); webappLinkDraft = ''; link.value = ''; }
+      catch (error) { problem.textContent = String(error?.message || error).replace(/^Error invoking remote method '[^']+': (?:Error: )?/, ''); }
+      finally { open.disabled = false; }
+    };
+    open.onclick = send; link.onkeydown = (event) => { if (event.key === 'Enter') send(); };
+    help.append(field, open, problem);
   }
   if (state.webappStatus === 'unreachable') {
     const retry = element('button', 'primary-button', 'Try again');
@@ -2326,28 +2388,40 @@ function renderWebappHelp() {
 function renderHermes() {
   const h = state.hermes || { status: 'unconfigured', sessions: [] };
   const list = $('hermes-list');
-  list.innerHTML = '';
-  for (const session of h.sessions) {
-    const open = element('button', `hermes-chip${session.selected ? ' selected' : ''}`, session.title || session.id);
-    open.type = 'button'; open.setAttribute('aria-pressed', String(!!session.selected));
-    open.onclick = () => hermesCommand('select', { sessionId: session.id, sessionKey: session.key });
-    list.append(open);
-  }
-  if (h.status === 'ready') {
-    if (!h.sessions.length) list.append(element('div', 'hermes-note', 'No live conversations.'));
-    if (h.storedSessions?.length) {
-      list.append(element('div', 'hermes-note', 'Saved conversations'));
-      for (const saved of h.storedSessions) {
-        const resume = element('button', 'hermes-chip', `Resume ${saved.title || saved.id}`);
-        resume.type = 'button';
-        const generation = h.generation;
-        resume.onclick = () => hermesCommand('resume-session', { storedSessionId: saved.id, generation });
-        list.append(resume);
-      }
-    } else if (!h.sessions.length && !h.storedSessionsError) {
-      list.append(element('div', 'hermes-note', 'No saved conversations.'));
+  const signature = JSON.stringify([
+    h.status, h.generation, h.storedSessionsError,
+    (h.sessions || []).map(session => [session.id, session.key, session.sessionId, session.sessionKey, session.title, !!session.selected]),
+    (h.storedSessions || []).map(session => [session.id, session.title]),
+  ]);
+  if (list.dataset.signature !== signature) {
+    const chips = [...list.querySelectorAll('button')];
+    const activeElement = typeof document === 'undefined' ? null : document.activeElement;
+    const focusedChip = chips.indexOf(activeElement);
+    list.dataset.signature = signature;
+    list.innerHTML = '';
+    for (const session of h.sessions) {
+      const open = element('button', `hermes-chip${session.selected ? ' selected' : ''}`, session.title || session.id);
+      open.type = 'button'; open.setAttribute('aria-pressed', String(!!session.selected));
+      open.onclick = () => hermesCommand('select', { sessionId: session.id, sessionKey: session.key });
+      list.append(open);
     }
-    if (h.storedSessionsError) list.append(element('div', 'hermes-note', h.storedSessionsError));
+    if (h.status === 'ready') {
+      if (!h.sessions.length) list.append(element('div', 'hermes-note', 'No live conversations.'));
+      if (h.storedSessions?.length) {
+        list.append(element('div', 'hermes-note', 'Saved conversations'));
+        for (const saved of h.storedSessions) {
+          const resume = element('button', 'hermes-chip', `Resume ${saved.title || saved.id}`);
+          resume.type = 'button';
+          const generation = h.generation;
+          resume.onclick = () => hermesCommand('resume-session', { storedSessionId: saved.id, generation });
+          list.append(resume);
+        }
+      } else if (!h.sessions.length && !h.storedSessionsError) {
+        list.append(element('div', 'hermes-note', 'No saved conversations.'));
+      }
+      if (h.storedSessionsError) list.append(element('div', 'hermes-note', h.storedSessionsError));
+    }
+    if (focusedChip >= 0) [...list.querySelectorAll('button')][focusedChip]?.focus({ preventScroll: true });
   }
   renderHermesSetup(h);
 }

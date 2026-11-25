@@ -85,7 +85,7 @@ if (!process.versions.electron) {
     const rows = () => run(`new Promise(resolve => requestAnimationFrame(() => resolve([...document.querySelectorAll('#native-pane .nc-list > .nc-row')].map(row => ({ role: row.classList.contains('user') ? 'user' : row.classList.contains('assistant') ? 'assistant' : 'card', text: (row.innerText.trim() || row.textContent).replace(/\\s*Copy$/, '').trim() })))))`);
     const marksAfter = (name, t0) => run(`(window.__nativeChatMarks || []).filter(m => m.name === ${JSON.stringify(name)} && m.t >= ${t0}).map(m => m.t)`);
     const visible = (selector) => run(`(() => { const node = document.querySelector(${JSON.stringify(selector)}); return !!node && !!node.offsetParent; })()`);
-    const click = (selector) => run(`document.querySelector(${JSON.stringify(selector)}).click()`);
+    const click = (selector) => run(`(async () => { const item = document.querySelector(${JSON.stringify(selector)}); const t = performance.now(); render(state); if (typeof nativeView !== 'undefined' && nativeView) { nativeView.setState(await nativeChat.getState()); await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); } if (!item.isConnected) throw new Error('a state update replaced the control before its click'); item.click(); return t; })()`);
     const idle = () => until(async () => !(await native()).run, 'reply finished', 30000);
     const type = async (text) => {
       await until(() => visible('#native-pane .nc-send'), 'send button');
@@ -99,7 +99,7 @@ if (!process.versions.electron) {
     const openSession = async (id) => {
       await click('#native-pane .nc-switch');
       await until(() => visible(`#native-pane .nc-menu-item[data-id="${id}"]`), `menu item ${id}`);
-      const t0 = await run(`(() => { const t = performance.now(); document.querySelector('#native-pane .nc-menu-item[data-id="${id}"]').click(); return t; })()`);
+      const t0 = await click(`#native-pane .nc-menu-item[data-id="${id}"]`);
       await until(async () => (await native()).activeId === id, `active ${id}`);
       return t0;
     };
@@ -109,6 +109,9 @@ if (!process.versions.electron) {
       // Configure through Settings: Save, Test, then pick the surface.
       await run(`document.getElementById('settings-fallback').click()`);
       await until(() => visible('#settings-native-url'), 'native settings');
+      assert.equal(await run(`document.querySelector('#settings-chat-surface option[value="native"]').textContent`), 'Alan’s native chat (beta)');
+      assert.equal(await run(`document.getElementById('settings-content').textContent.includes('Beta: Telegram and Hermes Desktop are the stable chat surfaces.')`), true, 'the settings section names the stable surfaces');
+      assert.equal(await run(`[...document.querySelectorAll('#settings-content .settings-subheading')].some(n => n.textContent === 'Alan’s native chat (beta)')`), true, 'the native settings subheading says beta');
       assert.equal(await run(`document.querySelector('#settings-chat-surface option[value="native"]').disabled`), true, 'not selectable before it is configured');
       await run(`(() => { for (const [id, value] of [['settings-native-url', ${JSON.stringify(process.env.NATIVE_CHAT_URL)}], ['settings-native-key', ${JSON.stringify(process.env.NATIVE_CHAT_KEY)}]]) { const input = document.getElementById(id); input.value = value; input.dispatchEvent(new Event('input')); } document.getElementById('settings-native-save').click(); })()`);
       await until(async () => (await run(`document.getElementById('settings-native-status').textContent`)) === 'Saved.', 'saved');
@@ -123,6 +126,8 @@ if (!process.versions.electron) {
       assert.equal(JSON.parse(fs.readFileSync(prefsFile, 'utf8')).chatSurface, 'native');
       await click('#modal-close');
       await until(() => visible('#native-pane .nc-composer'), 'native pane');
+      assert.equal(await run(`document.getElementById('native-pane').getAttribute('aria-label')`), 'Alan’s native chat (beta)');
+      assert.equal(await run(`document.querySelector('#native-pane .nc-head .nc-pill')?.textContent`), 'Beta');
       assert.equal(await run(`(() => { const box = document.querySelector('#native-pane textarea'); return box.scrollHeight <= box.clientHeight; })()`), true, 'the empty composer shows a whole line');
 
       // The compaction note above the composer and the quiet transcript row, on a second view fed a stub api (the mock speaks REST, which reports no context size).
@@ -289,7 +294,7 @@ if (!process.versions.electron) {
       assert.match(await run(`document.querySelector('#native-pane .nc-readonly').innerText`), /from Telegram, so it is read-only here[\s\S]*Continue here/);
       assert.equal(await visible('#native-pane .nc-composer'), false);
       if (!LAB) {
-        await run(`[...document.querySelectorAll('#native-pane .nc-readonly button')].find(b => b.textContent === 'Continue here').click()`);
+        await click('#native-pane .nc-readonly button');
         await until(async () => { const s = await native(); return s.activeId !== telegramId && !s.thread.readOnly; }, 'forked');
         await until(() => visible('#native-pane .nc-composer'), 'composer after Continue here');
         await until(async () => (await rows()).length === 6, 'fork paints the copied history');

@@ -2,11 +2,13 @@
   'use strict';
 
   // Ids are the chat surface names main already uses (usableSurfaces in shell-support.cjs).
+  const NATIVE_CHAT_LABEL = 'Alan’s native chat (beta)';
   const GATEWAYS = Object.freeze([
     { id: 'telegram', label: 'Telegram' },
     { id: 'hermes-desktop', label: 'Hermes' },
-    { id: 'native', label: 'Alan\'s Way' },
+    { id: 'native', label: NATIVE_CHAT_LABEL },
   ].map(Object.freeze));
+  const nativeChatBetaLabel = () => (/\bbeta\b/i.test(NATIVE_CHAT_LABEL) ? 'Beta' : '');
   const labelOf = (id) => GATEWAYS.find((gateway) => gateway.id === id)?.label || id;
 
   // One row per bot, with the gateways it is connected on in the fixed gateway order. `bots` is already in
@@ -42,7 +44,7 @@
     return [...new Set([...[...unread].reverse(), shown, ...gateways])].filter((id) => gateways.includes(id));
   }
 
-  const exported = { GATEWAYS, labelOf, botRows, unreadLabel, createUnreadOrder, previewOrder };
+  const exported = { GATEWAYS, NATIVE_CHAT_LABEL, nativeChatBetaLabel, labelOf, botRows, unreadLabel, createUnreadOrder, previewOrder };
   if (typeof module !== 'undefined' && module.exports) module.exports = exported;
   else root.GatewayList = exported;
 })(typeof window === 'object' ? window : undefined);
