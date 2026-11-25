@@ -33,6 +33,7 @@ const macUpdate = require('./mac-update.cjs');
 const setupCheck = require('./setup-check.cjs');
 const { createLog } = require('./main-log.cjs');
 const { armQuitWatchdog } = require('./update-quit.cjs');
+const { createQuitControl } = require('./quit-control.cjs');
 const releaseChannel = require('./release-channel.cjs');
 const { createNativeChat } = require('./native-chat.cjs');
 const { keyFiles, importKey } = require('./key-import.cjs');
@@ -198,7 +199,7 @@ const BATCH_BUDGET_MS = 50000;
 let batchFlowMod;
 const batchFlow = new Proxy({}, { get: (_t, prop) => (batchFlowMod ||= require('./batch-flow.cjs'))[prop] });
 const FLOW = Symbol('batch-flow');
-const QUIT_SAVE_MS = 8000;
+const QUIT_SAVE_MS = 8000, QUIT_CLOSE_MS = 8000;
 const BROWSER_RESTORE_WAIT_MS = 5000;
 // What one queued tab task may hold the tab's queue for. An action may run a 50s batch plus a 30s wait, and the connector gives up at 90s.
 const TAB_ACTION_MS = 100000, TAB_READ_MS = 45000, CAPTURE_MS = 20000, CDP_COMMAND_MS = 15000;
@@ -4215,22 +4216,26 @@ else {
     showWindow();
   });
   app.on('activate', showWindow);
-  let browserQuitPending = false, browserQuitReady = false;
-  app.on('before-quit', event => {
-    if (!browserQuitReady) {
-      event.preventDefault();
-      if (!browserQuitPending) {
-        savePreferences();
-        isQuitting = true;
-        browserQuitPending = true;
-        // A keychain prompt nobody answers, or a denied one, must not keep the app from quitting.
-        Promise.race([saveBrowserSession(), new Promise((_, reject) => setTimeout(() => reject(new Error('Saving browser sign-ins timed out.')), QUIT_SAVE_MS))])
-          .catch(error => logError('browser-save', error))
-          .then(() => { browserQuitReady = true; app.quit(); });
-      }
-      return;
-    }
-    isQuitting = true; sshForward.stop(); hostComputer?.close(); try { modelAuthChild?.kill(); } catch {} pointerFeed?.stop(); clearTimeout(activityTimer); clearInterval(idleTimer); clearInterval(captchaTimer); clearTimeout(onlineTimer); clearTimeout(vpsTimer); clearInterval(vpsMirrorTimer); clearTimeout(vpsMirrorDebounce); prefsSaver.flush(); nativeChat?.flush(); tray?.destroy(); apiServer?.close();
+  const quitControl = createQuitControl({
+    saveMs: QUIT_SAVE_MS, closeMs: QUIT_CLOSE_MS,
+    begin: () => { savePreferences(); isQuitting = true; },
+    save: () => saveBrowserSession(),
+    close: () => {
+      const windows = BrowserWindow.getAllWindows().filter(window => !window.isDestroyed());
+      for (const window of windows) if (!window.isDestroyed()) try { window.close(); } catch {}
+      return windows.length > 0;
+    },
+    quit: () => app.quit(),
+    exit: code => app.exit(code),
+    teardown: () => { isQuitting = true; sshForward.stop(); hostComputer?.close(); try { modelAuthChild?.kill(); } catch {} pointerFeed?.stop(); clearTimeout(activityTimer); clearInterval(idleTimer); clearInterval(captchaTimer); clearTimeout(onlineTimer); clearTimeout(vpsTimer); clearInterval(vpsMirrorTimer); clearTimeout(vpsMirrorDebounce); prefsSaver.flush(); nativeChat?.flush(); tray?.destroy(); apiServer?.close(); },
+    onSaveError: error => logError('browser-save', error),
+    onTeardownError: error => logError('quit-teardown', error),
   });
-  app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
+  app.on('web-contents-created', (_event, contents) => {
+    contents.on('will-prevent-unload', event => { if (quitControl.overrideUnload()) event.preventDefault(); });
+  });
+  app.on('before-quit', event => quitControl.beforeQuit(event));
+  app.on('will-quit', () => quitControl.willQuit());
+  process.on('SIGTERM', () => quitControl.signal());
+  app.on('window-all-closed', () => { if (!quitControl.windowAllClosed() && process.platform !== 'darwin') app.quit(); });
 }
