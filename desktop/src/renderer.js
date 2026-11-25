@@ -1802,7 +1802,7 @@ function mountChatSurface(body) {
   };
   body.append(element('p', 'settings-note', "It talks to the Hermes API server (API_SERVER_ENABLED=true and API_SERVER_KEY in the profile's .env). Use http://127.0.0.1:8642 through an SSH tunnel, or the https address Tailscale Serve gives port 8642."));
   const compact = settingsToggle(body, 'settings-native-compact', 'Compact long or idle chats before sending', 'compactBeforeSend');
-  body.append(element('p', 'settings-note', `When a conversation is nearly full, or has been idle long enough that Hermes has forgotten its cached context, ${NATIVE_CHAT_LABEL} asks Hermes to summarise it first. You can turn that off for one message from the note above the message box.`));
+  body.append(element('p', 'settings-note', 'When a conversation is nearly full, or has been idle long enough that Hermes has forgotten its cached context, Alan’s native chat asks Hermes to summarise it first. You can turn that off for one message from the note above the message box.'));
   const ttlRow = element('div', 'setting-row'), ttl = element('select'); ttl.id = 'settings-native-cache-ttl'; ttl.setAttribute('aria-label', 'Treat a chat as idle after');
   for (const [value, label] of [['5m', '5 minutes (Hermes default)'], ['1h', '1 hour']]) { const option = element('option', '', label); option.value = value; ttl.append(option); }
   ttlRow.append(element('span', '', 'Treat a chat as idle after'), ttl); body.append(ttlRow);
