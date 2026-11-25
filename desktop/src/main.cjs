@@ -4,6 +4,7 @@ const bootTimer = require('./boot-timing.cjs').createBootTimer();
 bootTimer.mark('process-start');
 const { SSH_OPTIONS: TAILNET_SSH_OPTIONS, hermesWebappUrl } = require('./tailnet.cjs');
 const { createWebappSignIn, signInToWebapp, SIGN_IN_ERRORS } = require('./webapp-signin.cjs');
+const { createWebappLink, createLaunchWatch, launchFragment } = require('./webapp-link.cjs');
 const { authorizeBot, approvalIdentity, registryFile } = require('./bot-auth.cjs');
 const { app, BrowserWindow, WebContentsView, webContents, ipcMain, Menu, Tray, Notification, dialog, clipboard, shell, nativeTheme, screen, nativeImage, session, powerMonitor, net, protocol, systemPreferences, safeStorage } = require('electron');
 const { ACCELERATORS } = require('./workspace-shortcuts.cjs');
@@ -159,9 +160,11 @@ let activeTabId = 'home', canvasTab = 'browser', activeVpsTabId = '', apiError =
 // shows the DOM surface (the Telegram view then measures to zero and hides);
 // 'native' shows Alan's native chat on the Hermes Sessions API.
 let canvasReturn = 'browser';
-let nativeChat = null, hermesHub = null, gatewayLink = null, chatTarget = 'telegram', webappStatus = 'unconfigured', webappTarget = '', webappSignInError = '', webappSignInTried = false, webappPrivate = false, canvasView = null, canvasPage = '';
+let nativeChat = null, hermesHub = null, gatewayLink = null, chatTarget = 'telegram', webappStatus = 'unconfigured', webappTarget = '', webappSignInError = '', webappSignInTried = false, webappPrivate = false, webappLinkTrying = false, webappLinkFailure = '', webappLinkStale = false, canvasView = null, canvasPage = '';
 // Hermes opens its API (8642) and Hermes Desktop (9120) only on the server's loopback: when a chat address points at this
 // computer and a server SSH login is saved, the app holds the port forward itself.
+const webappLink = createWebappLink({ run: sshRun, log: (text) => mainLog().write('hermes-webapp', text),
+  open: (link) => { const shown = chatTarget; try { openWebappLink(link); } finally { chatTarget = shown; } } });
 const sshForward = createSshForward({ spawn, onChange: () => {
   if (isQuitting) return;
   pushNativeState(); broadcast();
@@ -593,7 +596,7 @@ function getState() {
     canvasTab: shownCanvas(), canvasStrip: canvasStripTabs(shownCanvas(), webappCanvas()), webappCanvas: webappCanvas(), terminals: terminals.ids(), terminalNote, tunnelNote: sshForward.note(), activeTabId: shownCanvas() === 'screen' ? 'vps' : shownTabId(), activeVpsTabId, browserTabHost: shownCanvas() === 'screen' && vpsTabs.has(activeVpsTabId) ? 'vps' : HOST_LABEL, browserContentsId: (() => { const contents = tabs.get(shownTabId())?.view?.webContents; return contents && !contents.isDestroyed() ? contents.id : null; })(), browserTabId: shownCanvas() === 'screen' && vpsTabs.has(activeVpsTabId) ? activeVpsTabId : activeTabId, avatarLibrary: avatarStore.publicLibrary(), avatarPreferences: prefs.avatarPreferences,
     locationDefault: prefs.locationDefault, sitePermissions: prefs.sitePermissions, extensions: extensionStore?.list() || [], downloads: downloadStore.list(),
     chatTarget, hermes: hermesSummary(), chatSurface: resolveChatSurface(prefs.chatSurface, webappStatus, !!nativeChat?.configured), hermesWebappUrl: prefs.hermesWebappUrl, webappStatus, nativeChat: nativeChat?.summary() || { configured: false }, nativeKeyFiles: keyFiles({ fs, home: os.homedir() }),
-    webappSignIn: webappTarget ? webappSignIn.username(new URL(webappTarget).origin) : '', webappSignInError,
+    webappSignIn: webappTarget ? webappSignIn.username(new URL(webappTarget).origin) : '', webappSignInError, webappPrivate, webappLinkTrying, webappLinkFailure, webappLinkStale,
     chatBotId: chatBotId(), hermesBot: builtinBot() ? { id: 'hermes', name: hermesBotName() } : null,
     recording: recording ? { tabId: recording.tabId, steps: recording.steps.length, startedAt: recording.startedAt } : null, recordings: recordings.list(),
     fullscreen: !!win && !win.isDestroyed() && win.isFullScreen(), api: { url: apiPort ? `http://127.0.0.1:${apiPort}` : '', ready: !!apiPort, error: apiError } };
@@ -761,19 +764,38 @@ function syncWebapp() {
 // A Webapp without sign-in opens only through the one-use link `hermes webapp --no-open`
 // prints; its credential then lives in this view's sessionStorage, never on disk here.
 function openWebappLink(link) {
-  let launch;
-  try {
-    const pasted = new URL(String(link).trim());
-    // The host prints its own address; a tunnel may forward it to another local port.
-    if (pasted.pathname.endsWith('/webapp/launch') && /^#ticket=[\w-]{43}(&|$)/.test(pasted.hash)) launch = new URL(`webapp/launch${pasted.hash}`, webappTarget);
-  } catch {}
-  if (!launch || webappStatus === 'unconfigured') throw new Error('Paste the one-use link that hermes webapp --no-open prints on the Hermes host.');
-  chatTarget = 'webapp';
+  if (webappStatus === 'unconfigured') throw new Error('Save the Hermes Desktop address first.');
+  if (!String(link ?? '').trim()) throw new Error('Nothing was pasted. Copy the one-use link that hermes webapp --no-open prints on the Hermes host, then paste it here.');
+  // The host prints its own address; a tunnel may forward it to another local port, so only the fragment is used.
+  const fragment = launchFragment(link);
+  if (!fragment) throw new Error('No one-use link was found in what was pasted. Copy the whole http://…/webapp/launch#ticket=… line that hermes webapp --no-open prints on the Hermes host.');
+  const launch = new URL(`webapp/launch${fragment}`, webappTarget);
+  chatTarget = 'webapp'; webappLinkStale = false;
   if (webappView) webappView.webContents.loadURL(launch.href).catch(() => {});
   else createWebappView(launch.href);
 }
 function createWebappView(url) {
-  webappView = guardedWebappView(url, (status) => { webappStatus = status; applyLayout(); broadcast(); });
+  webappView = guardedWebappView(url, (status) => { webappStatus = status; webappLinkTrying = false; webappLinkStale = false; applyLayout(); broadcast(); }, (view) => {
+    // The launch page never led anywhere: the ticket was already used or has expired. Drop the hidden view so the next link starts clean.
+    if (webappView !== view) return;
+    win.contentView.removeChildView(view); view.webContents.close(); webappView = null;
+    webappStatus = 'needs-link'; webappLinkTrying = false; webappLinkStale = true;
+    applyLayout(); broadcast();
+  });
+}
+// A one-use-link host: fetch the link over SSH once per episode, so the pane opens with no paste.
+// The link never leaves webappLink; only its plain failure reason is kept for the pane.
+function startWebappLink(target) {
+  const host = (prefs.vpsBrowser?.sshHost || '').trim();
+  if (!webappLink.wants({ target, host, needsLink: true })) return;
+  webappLinkTrying = true; webappLinkFailure = '';
+  webappLink.fetch({ host, canOpen: () => target === webappTarget && !webappView }).then((reason) => {
+    if (target !== webappTarget) return;
+    webappLinkFailure = reason;
+    if (reason || !webappView) webappLinkTrying = false;
+    broadcast();
+  });
+  setTimeout(() => { if (webappLinkTrying && target === webappTarget) { webappLinkTrying = false; broadcast(); } }, 35000).unref();
 }
 // The Canvas view shares the chat view's partition, so one cookie sign-in serves both.
 function syncCanvasView() {
@@ -823,21 +845,28 @@ function guardWebappContents(contents, origin) {
   contents.on('will-navigate', stay);
   contents.on('will-redirect', stay);
 }
-function guardedWebappView(url, report = () => {}) {
+function guardedWebappView(url, report = () => {}, onStaleLaunch = null) {
   const view = new WebContentsView({ webPreferences: WEBAPP_PREFERENCES });
   view.setBackgroundColor('#09090a');
   const contents = view.webContents;
   sitePermissions.install(contents.session, 'browser');
   guardWebappContents(contents, new URL(webappTarget).origin);
-  contents.on('did-navigate', (_event, url) => {
+  const launch = onStaleLaunch && createLaunchWatch({ onStale: () => onStaleLaunch(view) });
+  let reported = false;
+  const navigated = (url) => {
     const { pathname } = new URL(url);
     if (pathname.endsWith('/webapp/launch')) return;
+    launch?.disarm(); reported = true;
     const signIn = pathname.endsWith('/login');
     // One automatic try per sign-out, so a refused password can't loop or trip the throttle.
     if (!signIn) { webappSignInTried = false; webappSignInError = ''; }
     else if (!webappSignInTried) signInWebapp().catch(error => logError('hermes-webapp', error));
     report(signIn ? 'sign-in' : 'ready');
-  });
+  };
+  contents.on('did-navigate', (_event, url) => navigated(url));
+  // The Webapp may leave its launch page with history.replaceState, which is no did-navigate; only that first exit counts here.
+  contents.on('did-navigate-in-page', (_event, url, isMainFrame) => { if (isMainFrame && !reported) navigated(url); });
+  contents.on('did-stop-loading', () => { if (launch && !reported && new URL(contents.getURL() || 'about:blank').pathname.endsWith('/webapp/launch')) launch.arm(); });
   contents.on('did-fail-load', (_event, code, _text, _url, isMainFrame) => { if (isMainFrame && code !== -3) report('unreachable'); });
   win.contentView.addChildView(view);
   contents.loadURL(url).catch(() => {});
@@ -846,7 +875,7 @@ function guardedWebappView(url, report = () => {}) {
 // Signs in with the saved password and reloads the Webapp; on failure the Webapp's own
 // form stays up and the reason shows in Settings.
 async function signInWebapp() {
-  const target = webappTarget, saved = target && webappSignIn.read(new URL(target).origin);
+  const target = webappTarget, saved = target && !webappPrivate && webappSignIn.read(new URL(target).origin);
   if (!saved) return '';
   webappSignInTried = true;
   const failure = await signInToWebapp((url, init) => session.fromPartition(WEBAPP_PARTITION).fetch(url, init), target, saved);
@@ -880,6 +909,7 @@ async function checkWebapp() {
   if (target !== webappTarget) return;
   webappStatus = !reachable ? 'unreachable' : needsLink && !webappView ? 'needs-link' : 'reachable';
   webappPrivate = needsLink;
+  if (webappStatus === 'needs-link') startWebappLink(target); else { webappLinkTrying = false; if (!needsLink) webappLinkFailure = ''; }
   if (chatTarget === 'telegram') applySurface();
   if (reachable && webappView) webappView.webContents.loadURL(target).catch(() => {});
   if (reachable && canvasView) canvasPage = '';
@@ -2376,7 +2406,7 @@ function registerIpc() {
       case 'show-hermes': chatTarget = 'hermes'; broadcast(); break;
       case 'show-webapp': chatTarget = 'webapp'; syncWebapp(); broadcast(); break;
       case 'show-native': showSurface('native'); broadcast(); break;
-      case 'webapp-retry': await checkWebapp(); break;
+      case 'webapp-retry': webappLink.reset(); await checkWebapp(); break;
       case 'native-import-key': {
         const result = importKey({ name: value.name, fs, home: os.homedir(), safeStorage, readBack: () => loadNativePersisted().key,
           save: (key) => nativeChat.configure({ ...(parseBaseUrl(nativeChat.summary().address) || { baseUrl: 'http://127.0.0.1:8642', profile: '' }), key }) });
@@ -2385,6 +2415,7 @@ function registerIpc() {
       case 'webapp-link': openWebappLink(value.url); break;
       case 'webapp-sign-in': {
         if (!webappTarget) throw new Error('Save the Hermes Desktop address first.');
+        if (webappPrivate) throw new Error('This server opens with a one-use link, so it needs no username or password.');
         webappSignIn.save(new URL(webappTarget).origin, value.username, value.password);
         webappSignInError = ''; webappSignInTried = false; broadcast();
         const failure = webappView ? await signInWebapp() : (await checkWebapp(), '');
@@ -2468,7 +2499,7 @@ function registerIpc() {
         }
         const addressChanged = next.hermesWebappUrl !== prefs.hermesWebappUrl;
         persistSettingsPreferences(next);
-        if (addressChanged) { webappSignIn.forget(); webappSignInError = ''; webappSignInTried = false; checkWebapp().catch(error => logError('hermes-webapp', error)); }
+        if (addressChanged) { webappSignIn.forget(); webappSignInError = ''; webappSignInTried = false; webappLink.reset(); webappLinkFailure = ''; checkWebapp().catch(error => logError('hermes-webapp', error)); }
         if (nativeConfig) nativeChat.configure(nativeConfig);
         if (Object.hasOwn(value, 'compactBeforeSend') || Object.hasOwn(value, 'promptCacheTtl')) pushNativeState();
         if (Object.hasOwn(value, 'chatSurface') || nativeConfig || (addressChanged && !next.hermesWebappUrl)) applySurface();
